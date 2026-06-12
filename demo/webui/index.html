@@ -247,6 +247,10 @@ function bucketOf(ev) {
 }
 function renderTimeline() {
   const tl = $("timeline");
+  // Sticky-bottom: keep following the live feed only when already at the bottom;
+  // if the user has scrolled up, preserve their position across re-renders.
+  const prev = tl.scrollTop;
+  const atBottom = tl.scrollHeight - tl.clientHeight - prev < 40;
   let html = "", bucket = null;
   for (const ev of events) {
     const b = bucketOf(ev);
@@ -255,7 +259,7 @@ function renderTimeline() {
   }
   tl.innerHTML = html || `<div class="empty">No events yet…</div>`;
   $("evcount").textContent = events.length ? events.length + " events" : "";
-  tl.scrollTop = tl.scrollHeight;
+  tl.scrollTop = atBottom ? tl.scrollHeight : prev;
 }
 function row(badgeClass, badge, summary, detail) {
   return `<div class="ev"><span class="badge b-${badgeClass}">${badge}</span>`

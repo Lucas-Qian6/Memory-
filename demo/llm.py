@@ -27,6 +27,22 @@ _STOPWORDS = {
 _client_cache = None
 _client_tried = False
 
+# Lightweight per-run accounting of prompt chars actually sent to the LLM. The
+# eval harness resets this before a run and reads it after, as a token proxy for
+# "how much context did this arm feed the model" (real tokens would need the API
+# usage field). Only real ``_complete`` calls increment it.
+_usage_chars = 0
+
+
+def reset_usage() -> None:
+    global _usage_chars
+    _usage_chars = 0
+
+
+def get_usage() -> int:
+    """Total prompt chars sent to the LLM since the last ``reset_usage()``."""
+    return _usage_chars
+
 
 # --------------------------------------------------------------------------
 # Low-level gateway access
@@ -62,6 +78,8 @@ def _complete(prompt: str, max_tokens: int = 1024, use_llm: bool = True) -> Opti
     client = _get_client()
     if client is None:
         return None
+    global _usage_chars
+    _usage_chars += len(prompt)
     model = os.environ.get("MEMORY_DR_MODEL", "claude-sonnet-4-6")
     try:
         msg = client.messages.create(

@@ -13,5 +13,6 @@ demo/.demo_runs/
 artifacts/
 .demo_trace.json
 demo/.demo_trace.json
+eval/results/
 .pytest_cache/
 .DS_Store

@@ -320,6 +320,7 @@ class DeepResearchPipeline:
                 "call": "synthesize",
                 "used_llm": used_llm,
                 "used_claims": len(evidence),
+                "context_chars": len(context),
                 "sources": sorted({it.source for it in evidence if it.source}),
                 "report_chars": len(report),
                 "report": report,
