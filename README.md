@@ -52,7 +52,10 @@ rather than a rewrite.
 | `demo/llm.py` | LLM plan / extract / reflect / synthesize over an Anthropic-compatible gateway |
 | `demo/tools.py` | offline mock search, shaped like the real API response |
 | `demo/pipeline.py` | LLM-driven, memory-augmented single-task research loop |
-| `demo/run_demo.py` | one long-horizon task demo |
+| `demo/run_demo.py` | one long-horizon task demo (CLI) |
+| `demo/trace.py` | `Tracer` + `TracingMemoryManager` (records read/write/decision events; zero core changes) |
+| `demo/server.py` | stdlib web server for the interactive memory inspector |
+| `demo/webui/index.html` | inspector UI: live read→decide→write timeline + memory-state panel |
 
 ## Run
 
@@ -78,8 +81,24 @@ endpoint without code changes:
 export ANTHROPIC_API_KEY="<your-gpugeek-key>"
 export ANTHROPIC_BASE_URL="https://api.gpugeek.com"
 export MEMORY_DR_MODEL="Vendor2/Claude-4.6-opus"
-python demo/run_demo.py --llm
+python demo/run_demo.py "your question"
 ```
+
+## Inspect (web UI)
+
+An interactive inspector to type a query, run the agent, and watch — step by
+step — what it **reads** from memory, what it **decides**, and what it **writes**
+back, alongside the live memory state (working / episodic / semantic).
+
+```bash
+python demo/server.py            # then open http://127.0.0.1:8000
+python demo/server.py 8001       # custom port
+```
+
+It reuses the same loop and `.env`. Tick "mock search" to run fully offline;
+untick it (with `SEARCH_API_BASE_URL` set, e.g. on the dev box) to inspect a real
+run. The ordered trace is also written to `demo/.demo_trace.json`. Built on the
+stdlib only (no web framework); `anthropic` is needed only for the LLM loop.
 
 ## Plugging into the real pipeline
 

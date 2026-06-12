@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Memory Inspector — DeepResearch</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #161c24; --panel2: #1b232d; --line: #28323d;
+    --txt: #e6edf3; --muted: #8b98a5; --accent: #4493f8;
+    --working: #d29922; --episodic: #3fb950; --semantic: #a371f7;
+    --read: #4493f8; --plan: #d29922; --search: #2dd4bf; --skip: #6e7681;
+    --llm: #a371f7; --err: #f85149; --ok: #3fb950;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--txt);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 17px; font-weight: 650; }
+  header p { margin: 2px 0 0; color: var(--muted); font-size: 12.5px; }
+  .wrap { padding: 16px 20px; }
+  .controls { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: start; }
+  textarea#q {
+    width: 100%; min-height: 60px; resize: vertical; padding: 10px 12px;
+    background: var(--panel); color: var(--txt); border: 1px solid var(--line);
+    border-radius: 8px; font: inherit;
+  }
+  .opts { display: flex; flex-direction: column; gap: 8px; min-width: 230px; }
+  .opts .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .opts label { color: var(--muted); font-size: 12.5px; display: flex; gap: 6px; align-items: center; }
+  .opts input[type=number], .opts input[type=text] {
+    width: 64px; background: var(--panel); color: var(--txt);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit;
+  }
+  .opts input[type=text]#biz { width: 130px; }
+  button#run {
+    background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+    padding: 9px 18px; font-weight: 600; cursor: pointer; font-size: 14px;
+  }
+  button#run:disabled { opacity: .55; cursor: default; }
+  .statusline { margin-top: 10px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+  .dot.running { background: var(--plan); animation: pulse 1s infinite; }
+  .dot.done { background: var(--ok); } .dot.error { background: var(--err); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+  .warn { color: var(--plan); }
+  .metrics { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; min-width: 78px; }
+  .metric b { display: block; font-size: 18px; } .metric span { color: var(--muted); font-size: 11.5px; }
+  main { display: grid; grid-template-columns: 1.45fr 1fr; gap: 16px; margin-top: 16px; }
+  .col { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; display: flex; flex-direction: column; min-height: 360px; }
+  .col > h2 { margin: 0; padding: 11px 14px; font-size: 13px; font-weight: 600; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; }
+  .scroll { overflow-y: auto; max-height: calc(100vh - 360px); min-height: 320px; padding: 6px 0; }
+  /* timeline */
+  .rounddiv { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 6px 14px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .ev { padding: 6px 14px 6px 14px; border-bottom: 1px solid #1f272f; display: flex; gap: 9px; align-items: flex-start; }
+  .ev .body { flex: 1; min-width: 0; }
+  .ev .sum { white-space: normal; word-break: break-word; }
+  .ev .det { color: var(--muted); font-size: 12px; margin-top: 3px; padding-left: 2px; border-left: 2px solid var(--line); padding-left: 8px; }
+  .ev .det .li { margin: 2px 0; }
+  .badge { flex: none; display: inline-block; padding: 1px 7px; border-radius: 4px; font-size: 10.5px; font-weight: 700; letter-spacing: .03em; color: #0b0f14; margin-top: 1px; }
+  .b-READ{background:var(--read)} .b-PLAN{background:var(--plan)} .b-SEARCH{background:var(--search)}
+  .b-SKIP{background:var(--skip);color:#fff} .b-STOP{background:var(--skip);color:#fff}
+  .b-LLM{background:var(--llm)} .b-INFO{background:#30363d;color:var(--txt)} .b-ERROR{background:var(--err);color:#fff}
+  .b-WORKING{background:var(--working)} .b-EPISODIC{background:var(--episodic)} .b-SEMANTIC{background:var(--semantic)}
+  .b-DUP{background:#30363d;color:var(--muted)}
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+  .q { color: var(--accent); }
+  /* memory */
+  .tabs { display: flex; gap: 6px; }
+  .tab { cursor: pointer; padding: 2px 9px; border-radius: 999px; font-size: 11.5px; border: 1px solid var(--line); color: var(--muted); }
+  .tab.active { color: var(--txt); border-color: var(--accent); }
+  .mitem { padding: 8px 14px; border-bottom: 1px solid #1f272f; border-left: 3px solid transparent; }
+  .mitem.working { border-left-color: var(--working); }
+  .mitem.episodic { border-left-color: var(--episodic); }
+  .mitem.semantic { border-left-color: var(--semantic); }
+  .mitem .meta { color: var(--muted); font-size: 11.5px; margin-top: 3px; }
+  .mitem .meta a { color: var(--accent); text-decoration: none; }
+  .mitem.fresh { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { background: rgba(68,147,248,.22);} to { background: transparent; } }
+  .report { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 0; display: none; }
+  .report h2 { margin: 0; padding: 11px 14px; font-size: 13px; border-bottom: 1px solid var(--line); }
+  .report pre { margin: 0; padding: 14px; white-space: pre-wrap; word-break: break-word; font-family: inherit; line-height: 1.55; }
+  .empty { color: var(--muted); padding: 20px 14px; font-size: 13px; }
+  .legend { display:flex; gap:10px; flex-wrap:wrap; font-size:11px; color:var(--muted); }
+  .legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle;}
+  .lg-read::before{background:var(--read)} .lg-plan::before{background:var(--plan)} .lg-llm::before{background:var(--llm)}
+  .lg-w::before{background:var(--working)} .lg-e::before{background:var(--episodic)} .lg-s::before{background:var(--semantic)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Memory Inspector — DeepResearch (single task)</h1>
+  <p>Type a query, run the agent, and watch each step: what it <b>reads</b> from memory, what it <b>decides</b>, and what it <b>writes</b> back — plus the live memory state.</p>
+</header>
+
+<div class="wrap">
+  <div class="controls">
+    <div>
+      <textarea id="q" placeholder="Enter a research question…"></textarea>
+      <div class="legend" style="margin-top:8px">
+        <span class="lg-read">READ (recall)</span>
+        <span class="lg-plan">PLAN / SEARCH (decision)</span>
+        <span class="lg-llm">LLM</span>
+        <span class="lg-w">WORKING</span>
+        <span class="lg-e">EPISODIC</span>
+        <span class="lg-s">SEMANTIC</span>
+      </div>
+    </div>
+    <div class="opts">
+      <div class="row">
+        <label><input type="checkbox" id="mock" checked /> mock search</label>
+        <label><input type="checkbox" id="nollm" /> no LLM</label>
+      </div>
+      <div class="row">
+        <label>rounds <input type="number" id="rounds" value="3" min="1" max="8" /></label>
+        <label>pageSize <input type="number" id="pageSize" value="6" min="1" max="20" /></label>
+      </div>
+      <div class="row">
+        <label>bizTypes <input type="text" id="biz" value="paper" /></label>
+      </div>
+      <button id="run">Run agent</button>
+    </div>
+  </div>
+
+  <div class="statusline">
+    <span><span class="dot" id="dot"></span> <span id="status">idle</span></span>
+    <span id="cfg"></span>
+    <span id="warn" class="warn"></span>
+  </div>
+
+  <div class="metrics" id="metrics"></div>
+
+  <main>
+    <section class="col">
+      <h2>Step timeline <span class="mono" id="evcount" style="color:var(--muted)"></span></h2>
+      <div class="scroll" id="timeline"><div class="empty">Run the agent to see the read → decide → write trace.</div></div>
+    </section>
+    <section class="col">
+      <h2>
+        Memory state
+        <span class="tabs" id="tabs">
+          <span class="tab active" data-f="all">all</span>
+          <span class="tab" data-f="working">working</span>
+          <span class="tab" data-f="episodic">episodic</span>
+          <span class="tab" data-f="semantic">semantic</span>
+        </span>
+      </h2>
+      <div class="scroll" id="memory"><div class="empty">Memory is empty.</div></div>
+    </section>
+  </main>
+
+  <div class="report" id="reportBox">
+    <h2>Final report</h2>
+    <pre id="report"></pre>
+  </div>
+</div>
+
+<script>
+const DEFAULT_Q = "How does reaction context affect retrosynthesis prediction, and can LLM agents with memory help automate this research?";
+const $ = (id) => document.getElementById(id);
+let runId = null, lastSeq = 0, events = [], memFacet = "all", knownMem = new Set(), polling = false;
+
+$("q").value = DEFAULT_Q;
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+}
+
+$("tabs").addEventListener("click", (e) => {
+  const t = e.target.closest(".tab"); if (!t) return;
+  memFacet = t.dataset.f;
+  [...$("tabs").children].forEach(c => c.classList.toggle("active", c === t));
+  if (lastMemory) renderMemory(lastMemory);
+});
+
+$("run").addEventListener("click", startRun);
+
+async function startRun() {
+  const body = {
+    query: $("q").value.trim() || DEFAULT_Q,
+    mock: $("mock").checked,
+    no_llm: $("nollm").checked,
+    rounds: parseInt($("rounds").value || "3", 10),
+    page_size: parseInt($("pageSize").value || "6", 10),
+    biz: $("biz").value.trim() || "paper",
+  };
+  // reset
+  events = []; lastSeq = 0; knownMem = new Set(); lastMemory = null;
+  $("timeline").innerHTML = ""; $("memory").innerHTML = "";
+  $("reportBox").style.display = "none"; $("warn").textContent = "";
+  $("run").disabled = true; setStatus("running");
+  try {
+    const r = await fetch("/api/run", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (j.error) throw new Error(j.error);
+    runId = j.run_id;
+    if (!polling) { polling = true; poll(); }
+  } catch (e) {
+    setStatus("error"); $("warn").textContent = "failed to start: " + e.message; $("run").disabled = false;
+  }
+}
+
+let lastMemory = null;
+async function poll() {
+  if (!runId) { polling = false; return; }
+  try {
+    const r = await fetch(`/api/runs/${runId}/events?since=${lastSeq}`);
+    const j = await r.json();
+    if (j.events && j.events.length) { events.push(...j.events); lastSeq = j.max_seq; renderTimeline(); }
+    renderConfig(j.config); renderMetrics(j.metrics);
+    const m = await (await fetch(`/api/runs/${runId}/memory`)).json();
+    lastMemory = m.memory; renderMemory(m.memory);
+    if (j.status === "done") { setStatus("done"); showReport(j.report); $("run").disabled = false; polling = false; return; }
+    if (j.status === "error") { setStatus("error"); $("warn").textContent = "error: " + (j.error||""); $("run").disabled = false; polling = false; return; }
+  } catch (e) { /* transient; keep polling */ }
+  setTimeout(poll, 750);
+}
+
+function setStatus(s) {
+  $("status").textContent = s;
+  $("dot").className = "dot " + s;
+}
+function renderConfig(c) {
+  if (!c || !Object.keys(c).length) return;
+  const src = c.mock ? "mock search" : ("real API " + (c.base_url || ""));
+  let reason = c.use_llm ? (c.llm_available ? ("LLM " + (c.model||"")) : "LLM unavailable → deterministic") : "deterministic (no LLM)";
+  $("cfg").innerHTML = `search: <b>${esc(src)}</b> · reasoning: <b>${esc(reason)}</b> · bizTypes: ${esc((c.biz_types||[]).join(","))}`;
+}
+function renderMetrics(m) {
+  if (!m) return;
+  const mem = m.memory || {};
+  const cells = [
+    ["steps", m.steps], ["run", m.searches_run], ["skipped", m.searches_skipped],
+    ["working", mem.working||0], ["episodic", mem.episodic||0], ["semantic", mem.semantic||0],
+  ];
+  $("metrics").innerHTML = cells.map(([k,v]) => `<div class="metric"><b>${v??0}</b><span>${k}</span></div>`).join("");
+}
+
+// ---- timeline ----
+function bucketOf(ev) {
+  if (ev.phase === "synthesize") return "Synthesis";
+  if (!ev.round) return "Setup";
+  return "Round " + ev.round;
+}
+function renderTimeline() {
+  const tl = $("timeline");
+  let html = "", bucket = null;
+  for (const ev of events) {
+    const b = bucketOf(ev);
+    if (b !== bucket) { bucket = b; html += `<div class="rounddiv">${esc(b)}</div>`; }
+    html += renderEvent(ev);
+  }
+  tl.innerHTML = html || `<div class="empty">No events yet…</div>`;
+  $("evcount").textContent = events.length ? events.length + " events" : "";
+  tl.scrollTop = tl.scrollHeight;
+}
+function row(badgeClass, badge, summary, detail) {
+  return `<div class="ev"><span class="badge b-${badgeClass}">${badge}</span>`
+    + `<div class="body"><div class="sum">${summary}</div>${detail ? `<div class="det">${detail}</div>` : ""}</div></div>`;
+}
+function list(items) { return items.map(x => `<div class="li">${x}</div>`).join(""); }
+
+function renderEvent(ev) {
+  const p = ev.payload || {};
+  if (ev.kind === "recall") {
+    if (p.op === "get_state") {
+      const ret = (p.returned||[])[0];
+      return row("READ", "READ", "read <b>working</b> state" + (p.hit ? "" : " <span style='color:var(--muted)'>(none yet)</span>"),
+        ret ? `<span class="mono">${esc(ret.preview)}</span>` : "");
+    }
+    if (p.op === "seen_action") {
+      return row("READ", "READ", `dedup check: <span class="q mono">"${esc(p.query)}"</span> → ${p.hit ? "<b style='color:var(--err)'>HIT</b>" : "miss"}`, "");
+    }
+    const det = (p.returned||[]).map(it => `<span class="badge b-${(it.facet||'').toUpperCase()}" style="font-size:9px">${(it.facet||'')[0]||'?'}</span> <span class="mono">${esc(it.preview)}</span> <span style="color:var(--muted)">[${esc(it.source||'')}]</span>`);
+    return row("READ", "READ", `recall(<b>${esc(p.facet||'all')}</b>, top_k=${p.top_k==null?'-':p.top_k}) → <b>${p.count}</b> items`, det.length?list(det):"");
+  }
+  if (ev.kind === "decision") {
+    if (p.what === "plan") {
+      const qs = (p.sub_queries||[]).map(q => `<span class="q mono">"${esc(q)}"</span>`);
+      return row("PLAN", "PLAN", `planned <b>${(p.sub_queries||[]).length}</b> sub-queries <span style="color:var(--muted)">(${esc(p.method)})</span>`, list(qs));
+    }
+    if (p.what === "stop") return row("STOP", "STOP", `stop early — ${esc(p.reason)} <span style="color:var(--muted)">(${esc(p.method)})</span>`, "");
+    if (p.what === "skip") return row("SKIP", "SKIP", `skip <span class="q mono">"${esc(p.sub_query)}"</span> — ${esc(p.reason)}`, "");
+    if (p.what === "search") {
+      const papers = (p.papers||[]).map(pp => `<span class="mono">${esc(pp.title)}</span> <span style="color:var(--muted)">[${esc(pp.docId)}${pp.year?(", "+pp.year):""}]</span>`);
+      return row("SEARCH", "SEARCH", `searched <span class="q mono">"${esc(p.sub_query)}"</span> → <b>${p.hits}</b> papers`, papers.length?list(papers):"");
+    }
+    if (p.what === "search_error") return row("ERROR", "ERROR", `search failed: <span class="q mono">"${esc(p.sub_query)}"</span>`, `<span class="mono">${esc(p.error)}</span>`);
+  }
+  if (ev.kind === "llm") {
+    if (p.call === "extract_claims") {
+      const cs = (p.claims||[]).map(c => `<span class="mono">${esc(c)}</span>`);
+      return row("LLM", "LLM", `extracted <b>${p.n}</b> claims from <span class="mono">${esc(p.paper)}</span>`, cs.length?list(cs):"<span style='color:var(--muted)'>(none relevant)</span>");
+    }
+    if (p.call === "synthesize") {
+      return row("LLM", "LLM", `synthesized report — ${p.used_claims} claims, ${p.sources?p.sources.length:0} sources <span style="color:var(--muted)">(${p.used_llm?'LLM':'deterministic'})</span>`, "");
+    }
+  }
+  if (ev.kind === "write") {
+    if (p.op === "update_state") return row("WORKING", "WORKING", `write working snapshot`, `<span class="mono">${esc(p.preview)}</span>`);
+    if (p.op === "remember") {
+      const fac = (p.facet||"").toUpperCase();
+      if (!p.stored && p.dedup_hit) return row("DUP", "DUP", `near-duplicate, not stored <span style="color:var(--muted)">(${esc(p.facet)})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
+      if (!p.stored) return row("DUP", "FILTER", `filtered, not stored <span style="color:var(--muted)">(${esc(p.reason||'')})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
+      const src = p.source ? ` <span style="color:var(--muted)">[${esc(p.source)}]</span>` : "";
+      return row(fac, fac, `write <b>${esc(p.facet)}</b>${src}`, `<span class="mono">${esc(p.preview)}</span>`);
+    }
+  }
+  if (ev.kind === "info") {
+    if (p.event === "config" && p.fellback) { $("warn").textContent = "SEARCH_API_BASE_URL not set → fell back to mock search."; return ""; }
+    if (p.event === "start") return row("INFO", "INFO", `run started`, "");
+    if (p.event === "done") return row("INFO", "INFO", `run complete`, "");
+    if (p.event === "error") return row("ERROR", "ERROR", `run failed`, `<span class="mono">${esc(p.error)}</span>`);
+    if (p.event === "round_start") return "";  // shown as the round divider
+  }
+  return "";
+}
+
+// ---- memory panel ----
+function renderMemory(mem) {
+  if (!mem) return;
+  const facets = memFacet === "all" ? ["working","episodic","semantic"] : [memFacet];
+  let html = "";
+  for (const f of facets) {
+    for (const it of (mem[f]||[])) {
+      const fresh = knownMem.has(it.id) ? "" : " fresh";
+      knownMem.add(it.id);
+      const L = it.links || {};
+      let meta = `<span class="mono">[${esc(it.source||'')}]</span>`;
+      if (L.title) meta += ` · ${esc(L.title)}${L.year?(", "+esc(L.year)):""}`;
+      if (L.url) meta += ` · <a href="${esc(L.url)}" target="_blank" rel="noopener">link</a>`;
+      if (it.tags && it.tags.length) meta += ` · <span style="color:var(--muted)">${esc(it.tags.join(", "))}</span>`;
+      html += `<div class="mitem ${f}${fresh}"><div>${esc(it.content)}</div><div class="meta">${meta}</div></div>`;
+    }
+  }
+  $("memory").innerHTML = html || `<div class="empty">No items in this facet yet.</div>`;
+}
+
+function showReport(report) {
+  if (!report) return;
+  $("reportBox").style.display = "block";
+  $("report").textContent = report;
+}
+</script>
+</body>
+</html>

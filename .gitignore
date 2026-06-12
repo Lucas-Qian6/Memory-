@@ -7,5 +7,7 @@ venv/
 .memory_store*.json
 .demo_memory.json
 demo/.demo_memory.json
+.demo_trace.json
+demo/.demo_trace.json
 .pytest_cache/
 .DS_Store
