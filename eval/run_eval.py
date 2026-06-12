@@ -118,13 +118,37 @@ def main() -> None:
     )
     print("=" * 70)
 
+    config = {
+        "mock": eff_mock,
+        "use_llm": use_llm,
+        "llm_available": llm_ready,
+        "judge": judge_on,
+        "rounds": args.rounds,
+        "trials": args.trials,
+        "questions": [q["id"] for q in qs],
+        "recall_top_k": args.recall_top_k,
+        "inject_char_budget": args.inject_char_budget,
+        "model": os.environ.get("MEMORY_DR_MODEL", "") if llm_ready else "",
+    }
+
+    # Stable, per-run output paths created up front. The summary JSON is rewritten
+    # after EVERY run and the .jsonl gets one appended line per run/judgment, so a
+    # slow or interrupted sweep still leaves a current, readable report on disk.
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = os.path.join(RESULTS_DIR, f"eval_{ts}.json")
+    rows_path = os.path.join(RESULTS_DIR, f"eval_{ts}.jsonl")
+    print(f"  incremental output (updated per run):\n    rows   : {rows_path}\n    summary: {out_path}\n")
+
+    rng = random.Random(args.seed)
+    q_by_id = {q["id"]: q["question"] for q in qs}
     results: List[Dict[str, Any]] = []
-    reports: Dict[Tuple[str, int], Dict[str, str]] = {}
+    judgments: List[Dict[str, Any]] = []
 
     for q in qs:
         qid, question = q["id"], q["question"]
         for trial in range(1, args.trials + 1):
-            reports.setdefault((qid, trial), {})
+            pair: Dict[str, str] = {}
             for arm in arms.ARMS:
                 handles, report = run_one(arm, question, args, client)
                 row = metrics_mod.collect(
@@ -132,62 +156,66 @@ def main() -> None:
                     report, handles["llm_input_chars"],
                 )
                 results.append(row)
-                reports[(qid, trial)][arm] = report
+                pair[arm] = report
+                _append_jsonl(rows_path, {"kind": "run", **row})
                 print(
                     f"  [{arm:>3}] {qid:<20} t{trial}: "
                     f"run={row['searches_run']:>2} skip={row['searches_skipped']:>2} "
                     f"claims={row['claims_kept']:>3} ctx={row['context_chars']:>5} "
                     f"src={row['sources_cited']:>2}"
                 )
+                _write_json(out_path, _build_summary(config, results, judgments))
 
-    # --- quality: blind pairwise judge ---------------------------------
-    judgments: List[Dict[str, Any]] = []
-    if judge_on:
-        rng = random.Random(args.seed)
-        q_by_id = {q["id"]: q["question"] for q in qs}
-        for (qid, trial), pair in reports.items():
-            if "on" in pair and "off" in pair:
+            # Judge this pair as soon as both arms are in, so quality verdicts are
+            # persisted incrementally too (not deferred to a final batch pass).
+            if judge_on and "on" in pair and "off" in pair:
                 verdict = judge_mod.judge_pair(q_by_id[qid], pair["on"], pair["off"], rng=rng)
                 if verdict:
-                    judgments.append({"question_id": qid, "trial": trial, **verdict})
+                    jrow = {"question_id": qid, "trial": trial, **verdict}
+                    judgments.append(jrow)
+                    _append_jsonl(rows_path, {"kind": "judge", **jrow})
+                    print(
+                        f"    judged {qid} t{trial}: "
+                        + " ".join(f"{d}={verdict[d]}" for d in judge_mod.DIMENSIONS)
+                    )
+                    _write_json(out_path, _build_summary(config, results, judgments))
 
+    summary = _build_summary(config, results, judgments)
+    _write_json(out_path, summary)
+    _print_summary(summary["by_arm"], summary["deltas_on_minus_off"], summary["judge"], out_path)
+
+
+def _build_summary(
+    config: Dict[str, Any],
+    results: List[Dict[str, Any]],
+    judgments: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Assemble the aggregate summary from whatever has been collected so far."""
     by_arm = metrics_mod.aggregate_by_arm(results)
-    delta = metrics_mod.deltas(by_arm)
-    judge_tally = judge_mod.aggregate(judgments) if judgments else {}
-
-    summary = {
-        "config": {
-            "mock": eff_mock,
-            "use_llm": use_llm,
-            "llm_available": llm_ready,
-            "judge": judge_on,
-            "rounds": args.rounds,
-            "trials": args.trials,
-            "questions": [q["id"] for q in qs],
-            "recall_top_k": args.recall_top_k,
-            "inject_char_budget": args.inject_char_budget,
-            "model": os.environ.get("MEMORY_DR_MODEL", "") if llm_ready else "",
-        },
+    return {
+        "config": config,
         "by_arm": by_arm,
-        "deltas_on_minus_off": delta,
-        "judge": judge_tally,
+        "deltas_on_minus_off": metrics_mod.deltas(by_arm),
+        "judge": judge_mod.aggregate(judgments) if judgments else {},
         "judgments": judgments,
         "results": results,
     }
 
-    out_path = _write_results(summary)
-    _print_summary(by_arm, delta, judge_tally, out_path)
 
-
-def _write_results(summary: Dict[str, Any]) -> str:
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = os.path.join(RESULTS_DIR, f"eval_{ts}.json")
-    tmp = out_path + ".tmp"
+def _write_json(path: str, obj: Any) -> None:
+    """Atomically (re)write a JSON file (tmp + replace)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(summary, fh, ensure_ascii=False, indent=2)
-    os.replace(tmp, out_path)
-    return out_path
+        json.dump(obj, fh, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _append_jsonl(path: str, row: Dict[str, Any]) -> None:
+    """Append one crash-safe line to the per-run .jsonl log."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _print_summary(by_arm, delta, judge_tally, out_path) -> None:
