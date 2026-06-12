@@ -5,6 +5,11 @@
 > **目标（6/30）**：把 MVP 推进到「**能接进真实 DR pipeline、能用、可评测**」。
 > **原则**：① 接入优先（先能接进去，再优化）；② **每个 phase 结束都有可运行产物**；
 > ③ 所有访问只走 `MemoryManager`，底层换实现不影响调用方。
+>
+> **进度（6/12）**：P1 存储分层 ✅ + P2 的**向量召回** ✅ 已落地——working=`state.md`、
+> episodic=`episodic.jsonl`、semantic=`semantic.json` + 原文 `artifacts/` + 本地向量 sidecar
+> （`sentence-transformers`，缺失退回词法）；扩字段 `evidence/uri/step/status/content_hash`、
+> recency 改 step 序、写入保持**内联同步**。余下：P2 **分级压缩**、P3 一致性+评测、P4 集成联调。
 
 ---
 ## 阶段一览

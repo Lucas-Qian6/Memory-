@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional
 
-from . import retrieval
+from . import embeddings, retrieval
 from .schema import MemoryItem, MemoryType
 from .store import MemoryStore
 
@@ -38,6 +38,9 @@ class WritePolicy:
     def is_duplicate(self, item: MemoryItem, store: MemoryStore) -> Optional[MemoryItem]:
         """Return an existing near-duplicate of the same type, if any."""
         for existing in store.query(type=item.type):
+            # Cheapest first: exact match via normalized content hash.
+            if item.content_hash and existing.content_hash == item.content_hash:
+                return existing
             if item.source and existing.source == item.source and (
                 existing.content.strip() == item.content.strip()
             ):
@@ -65,8 +68,22 @@ class ReadPolicy:
         candidates = store.query(type=type, task_id=task_id) if (
             type or task_id
         ) else store.all()
+        # Semantic recall goes hybrid when embeddings are available: compute the
+        # query vector once and hand the {id: vector} sidecar to the ranker.
+        # Everything else (episodic/working) stays lexical.
+        query_vec = None
+        vectors = None
+        if type == "semantic":
+            query_vec = embeddings.encode(query)
+            if query_vec is not None and hasattr(store, "semantic_vectors"):
+                vectors = store.semantic_vectors()
         ranked = retrieval.rank(
-            query, candidates, top_k=top_k or self.top_k, min_score=self.min_score
+            query,
+            candidates,
+            top_k=top_k or self.top_k,
+            min_score=self.min_score,
+            query_vec=query_vec,
+            vectors=vectors,
         )
         return [item for item, _ in ranked]
 

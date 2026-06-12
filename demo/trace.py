@@ -133,9 +133,21 @@ class TracingMemoryManager(MemoryManager):
         source: Optional[str] = None,
         tags: Optional[List[str]] = None,
         links: Optional[dict] = None,
+        evidence: Optional[str] = None,
+        uri: Optional[str] = None,
+        step: Optional[int] = None,
     ) -> Optional[MemoryItem]:
         before = len(self.store)
-        item = super().remember(content, type=type, source=source, tags=tags, links=links)
+        item = super().remember(
+            content,
+            type=type,
+            source=source,
+            tags=tags,
+            links=links,
+            evidence=evidence,
+            uri=uri,
+            step=step,
+        )
         stored_new = len(self.store) > before
         if item is None:
             self._emit(
@@ -166,8 +178,8 @@ class TracingMemoryManager(MemoryManager):
             )
         return item
 
-    def update_state(self, state: str) -> MemoryItem:
-        item = super().update_state(state)
+    def update_state(self, state: str, step: Optional[int] = None) -> MemoryItem:
+        item = super().update_state(state, step=step)
         self._emit(
             "write",
             {"op": "update_state", "facet": "working", "id": item.id, "preview": _preview(state), "stored": True},
@@ -223,6 +235,7 @@ def snapshot(memory: MemoryManager) -> Dict[str, List[Dict[str, Any]]]:
                 "source": it.source,
                 "tags": list(it.tags or []),
                 "links": it.links or {},
+                "uri": it.uri,
                 "created_at": it.created_at,
             }
         )

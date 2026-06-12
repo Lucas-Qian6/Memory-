@@ -40,6 +40,8 @@ class DeepResearchPipeline:
         page_size: int = 6,
         max_subqueries: int = 3,
         max_claims_per_paper: int = 3,
+        recall_top_k: int = 10,
+        inject_char_budget: int = 4000,
         verbose: bool = True,
         tracer=None,
     ) -> None:
@@ -50,6 +52,10 @@ class DeepResearchPipeline:
         self.page_size = page_size
         self.max_subqueries = max_subqueries
         self.max_claims_per_paper = max_claims_per_paper
+        # Recall/injection budget: how many claims we pull and how many chars of
+        # them we are willing to inject into a prompt (the rest stays in memory).
+        self.recall_top_k = recall_top_k
+        self.inject_char_budget = inject_char_budget
         self.verbose = verbose
         self.searches_run = 0
         self.searches_skipped = 0
@@ -86,6 +92,27 @@ class DeepResearchPipeline:
             "docId": paper.doc_id,
         }
 
+    def _paper_raw(self, paper: Paper) -> str:
+        """Raw source text archived under artifacts/ (off the live context)."""
+        authors = ", ".join(paper.authors) if paper.authors else "(unknown)"
+        meta = [
+            f"# {paper.title}",
+            "",
+            f"- docId: {paper.doc_id}",
+            f"- authors: {authors}",
+            f"- year: {paper.year}",
+            f"- venue: {paper.venue}",
+            f"- doi: {paper.doi}",
+            f"- url: {paper.url}",
+            f"- citationCount: {paper.citation_count}",
+            "",
+            "## Abstract",
+            "",
+            paper.abstract or "(no abstract)",
+            "",
+        ]
+        return "\n".join(meta)
+
     # --- one research action (a single search query) -------------------
     def research_step(self, question: str, sub_query: str) -> None:
         self.steps += 1
@@ -109,7 +136,11 @@ class DeepResearchPipeline:
             self._trace("decision", {"what": "search_error", "sub_query": sub_query, "error": str(e)})
             self._log(f"  [error] search failed: {e}")
             self.memory.remember(
-                sub_query, type="episodic", source="planner", links={"error": str(e)}
+                sub_query,
+                type="episodic",
+                source="planner",
+                links={"error": str(e)},
+                step=self.steps,
             )
             return
 
@@ -131,11 +162,14 @@ class DeepResearchPipeline:
             type="episodic",
             source="planner",
             links={"bizTypes": self.biz_types, "hits": len(results.papers)},
+            step=self.steps,
         )
 
         # Extract findings (semantic) from each paper, with source + evidence.
         kept = 0
         for paper in results.papers:
+            # Archive the raw source once (off the live context); claims point to it.
+            uri = self.memory.archive(paper.doc_id, self._paper_raw(paper))
             claims = llm.extract_claims(
                 question, paper, max_claims=self.max_claims_per_paper, use_llm=self.use_llm
             )
@@ -150,12 +184,16 @@ class DeepResearchPipeline:
                 },
             )
             for claim in claims:
+                evidence = claim.get("evidence", "")
                 stored = self.memory.remember(
                     claim["text"],
                     type="semantic",
                     source=paper.doc_id,
                     tags=self._paper_tags(paper, sub_query),
-                    links=self._paper_links(paper, claim.get("evidence", "")),
+                    links=self._paper_links(paper, evidence),
+                    evidence=evidence,
+                    uri=uri,
+                    step=self.steps,
                 )
                 if stored is not None:
                     kept += 1
@@ -167,7 +205,8 @@ class DeepResearchPipeline:
 
         # Working memory: write the goal/plan down so it survives a long task.
         self.memory.update_state(
-            f"goal: {question}\nplan: decompose -> search -> extract -> synthesize"
+            f"goal: {question}\nplan: decompose -> search -> extract -> synthesize",
+            step=self.steps,
         )
 
         for r in range(1, rounds + 1):
@@ -213,7 +252,8 @@ class DeepResearchPipeline:
                 f"goal: {question}\n"
                 f"progress: round {r}/{rounds} done; "
                 f"{self.searches_run} searches run, {self.searches_skipped} skipped; "
-                f"{self.memory.stats()['semantic']} findings kept"
+                f"{self.memory.stats()['semantic']} findings kept",
+                step=self.steps,
             )
 
         return self.synthesize(question)
@@ -223,9 +263,11 @@ class DeepResearchPipeline:
         state = self.memory.get_state()
         return state.content if state else ""
 
-    def _known_text(self, question: str, top_k: int = 8) -> str:
-        items = self.memory.recall(question, type="semantic", top_k=top_k)
-        return self._evidence_context(items, max_chars=1500)
+    def _known_text(self, question: str, top_k: Optional[int] = None) -> str:
+        items = self.memory.recall(
+            question, type="semantic", top_k=top_k or self.recall_top_k
+        )
+        return self._evidence_context(items, max_chars=self.inject_char_budget)
 
     def _evidence_context(self, items, max_chars: int = 4000) -> str:
         """Compact, citation-bearing context block for planning / synthesis."""
@@ -246,12 +288,14 @@ class DeepResearchPipeline:
         return "\n".join(lines)
 
     # --- synthesis: findings come from memory, not a bloated context ----
-    def synthesize(self, question: str, top_k: int = 10) -> str:
+    def synthesize(self, question: str, top_k: Optional[int] = None) -> str:
         if self.tracer is not None:
             self.tracer.set_phase("synthesize")
         self._log("\n-- synthesize (recall + compress semantic memory) --")
-        evidence = self.memory.recall(question, type="semantic", top_k=top_k)
-        context = self._evidence_context(evidence, max_chars=4000)
+        evidence = self.memory.recall(
+            question, type="semantic", top_k=top_k or self.recall_top_k
+        )
+        context = self._evidence_context(evidence, max_chars=self.inject_char_budget)
 
         report = llm.synthesize(question, context, use_llm=self.use_llm)
         used_llm = report is not None

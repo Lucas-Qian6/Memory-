@@ -38,15 +38,26 @@ class MemoryManager:
         source: Optional[str] = None,
         tags: Optional[List[str]] = None,
         links: Optional[dict] = None,
+        evidence: Optional[str] = None,
+        uri: Optional[str] = None,
+        step: Optional[int] = None,
     ) -> Optional[MemoryItem]:
         """Store an item, applying selectivity + dedup. Returns the stored
-        (or pre-existing duplicate) item, or None if filtered out."""
+        (or pre-existing duplicate) item, or None if filtered out.
+
+        ``evidence`` (supporting span), ``uri`` (pointer to archived raw source),
+        and ``step`` (task step ordinal, drives recency) are optional first-class
+        fields used by the semantic facet.
+        """
         item = MemoryItem(
             content=content,
             type=type,
             source=source,
             tags=tags or [],
             links=links or {},
+            evidence=evidence,
+            uri=uri,
+            step=step,
             task_id=self.task_id,
         )
         if not self.write_policy.should_store(item):
@@ -97,7 +108,7 @@ class MemoryManager:
         return self.read_policy.assemble_context(items, max_chars=4000)
 
     # --- task state: keep the thread across many steps -----------------
-    def update_state(self, state: str) -> MemoryItem:
+    def update_state(self, state: str, step: Optional[int] = None) -> MemoryItem:
         """Record the current task state as working memory.
 
         Lets the agent keep its goal / plan / outline / draft out of the live
@@ -108,9 +119,21 @@ class MemoryManager:
                 content=state,
                 type="working",
                 source="state",
+                step=step,
                 task_id=self.task_id,
             )
         )
+
+    # --- raw source archival: keep originals off the live context ------
+    def archive(self, source: Optional[str], content: str) -> Optional[str]:
+        """Persist raw source text under artifacts/ (once per source).
+
+        Returns a relative uri to attach to the distilled claims, or None when
+        the store is purely in-memory. The raw text never enters live context.
+        """
+        if hasattr(self.store, "write_artifact"):
+            return self.store.write_artifact(source, content)
+        return None
 
     def get_state(self) -> Optional[MemoryItem]:
         """Return the latest task-state snapshot, if any."""

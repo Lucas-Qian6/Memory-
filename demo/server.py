@@ -33,6 +33,7 @@ from trace import Tracer, TracingMemoryManager, snapshot  # noqa: E402
 HERE = os.path.dirname(__file__)
 UI_PATH = os.path.join(HERE, "webui", "index.html")
 TRACE_PATH = os.path.join(HERE, ".demo_trace.json")
+RUNS_DIR = os.path.join(HERE, ".demo_runs")  # per-run layered stores (+ artifacts/)
 
 _runs: Dict[str, "Run"] = {}
 _runs_lock = threading.Lock()
@@ -49,6 +50,7 @@ class Run:
         self.error: Optional[str] = None
         self.report: Optional[str] = None
         self.config: Dict[str, Any] = {}
+        self.base_dir: Optional[str] = None  # per-run layered store dir
 
     def metrics(self) -> Dict[str, Any]:
         m: Dict[str, Any] = {"steps": 0, "searches_run": 0, "searches_skipped": 0}
@@ -95,7 +97,10 @@ def _execute(run: Run) -> None:
         }
         run.tracer.record("info", {"event": "start", **run.config})
 
-        store = MemoryStore(path=None)  # per-run, in-memory
+        # Per-run layered store on disk so the inspector can link to archived
+        # raw sources (artifacts/); each run gets its own directory.
+        run.base_dir = os.path.join(RUNS_DIR, run.id)
+        store = MemoryStore(base_dir=run.base_dir)
         run.memory = TracingMemoryManager(store=store, task_id="task-alpha", tracer=run.tracer)
         run.pipeline = DeepResearchPipeline(
             run.memory,
@@ -163,6 +168,9 @@ class Handler(BaseHTTPRequestHandler):
             if leaf == "memory":
                 snap = snapshot(run.memory) if run.memory is not None else {}
                 return self._json({"memory": snap, "metrics": run.metrics()})
+            if leaf == "artifact":
+                name = (parse_qs(parsed.query).get("name", [""])[0]) or ""
+                return self._serve_artifact(run, name)
         return self._json({"error": "not found"}, 404)
 
     def do_POST(self) -> None:
@@ -190,6 +198,26 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return self._send(500, b"UI not found (demo/webui/index.html)", "text/plain; charset=utf-8")
         return self._send(200, body, "text/html; charset=utf-8")
+
+    def _serve_artifact(self, run: "Run", name: str) -> None:
+        """Serve a run's archived raw source file (traversal-safe, this run only)."""
+        if not run.base_dir:
+            return self._json({"error": "no artifacts for this run"}, 404)
+        safe = os.path.basename(name)
+        if not safe or safe != name:  # reject any path separators / traversal
+            return self._json({"error": "bad artifact name"}, 400)
+        art_dir = os.path.realpath(os.path.join(run.base_dir, "artifacts"))
+        path = os.path.realpath(os.path.join(art_dir, safe))
+        if path != art_dir and not path.startswith(art_dir + os.sep):
+            return self._json({"error": "forbidden"}, 403)
+        if not os.path.isfile(path):
+            return self._json({"error": "artifact not found"}, 404)
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            return self._json({"error": "cannot read artifact"}, 500)
+        return self._send(200, body, "text/markdown; charset=utf-8")
 
 
 def _get_run(run_id: str) -> Optional[Run]:

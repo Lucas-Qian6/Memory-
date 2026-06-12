@@ -10,6 +10,13 @@
 > 相关代码：[`demo/search_client.py`](../demo/search_client.py)（真实 API 适配器）、
 > [`demo/llm.py`](../demo/llm.py)（规划/抽取/反思/综合）、
 > [`demo/pipeline.py`](../demo/pipeline.py)（记忆增强循环）。
+>
+> **实现状态（6/12 更新）**：本文结论已落地为**分层存储 + 本地向量召回**——
+> working→`state.md`、episodic→`episodic.jsonl`、semantic→`semantic.json` + 原文落
+> `artifacts/`，claim 向量化（`sentence-transformers`，缺失则退回词法）。新增字段
+> `evidence / uri / step / status / content_hash`；recency 改为 **step 序**；写入保持**内联同步**。
+> 详见 [`src/memory_dr/backends.py`](../src/memory_dr/backends.py)、
+> [`src/memory_dr/embeddings.py`](../src/memory_dr/embeddings.py)。
 
 ---
 
@@ -85,7 +92,7 @@
 | --- | --- | --- | --- | --- |
 | working | **markdown 文本快照**（goal/提纲/草稿/进度） | 覆盖式（取最新一条） | 直接取最新 `get_state()` | 否 |
 | episodic | **追加式结构化日志**（query + bizTypes + hits + ts） | 关键词/字符串相似（`seen_action`） | 按 query 判“做过没” | 否 |
-| semantic | **结构化记录**（claim + 来源 + 证据 + 引用元数据） | 内容/关键词 jaccard 去重 | 相关性 + 新近度 top-k | **是（演进项）** |
+| semantic | **结构化记录**（claim + 来源 + 证据 + 引用元数据），原文落 `artifacts/` | content_hash 精确 + 关键词 jaccard 去重 | 向量+词法 hybrid + step 新近度 top-k | **是（已实现：本地 embeddings + 词法 fallback）** |
 | 最终报告 | markdown（**是产物，不是记忆**） | — | — | — |
 
 要点：
@@ -139,7 +146,9 @@
 
 ## 7. 演进建议
 
-- **semantic 接向量库**：claim embedding + `links` 作 payload，关键词召回升级为向量召回（语义更准）。
+- **semantic 接向量库**：✅ 已实现——claim 经 `sentence-transformers` 向量化存入 sink 的
+  `{id: vector}` sidecar，召回为「向量 cosine + 词法」hybrid（缺包则纯词法）。`links` 仍作
+  引用 payload，原文落 `artifacts/`、`uri` 指回。见 [`src/memory_dr/retrieval.py`](../src/memory_dr/retrieval.py)。
 - **scholar / patent**：待真实非空响应后补 `_parse_scholar` / `_parse_patent`（其余逻辑与字段无关）。
 - **时效与冲突**（capability 文档挑战三）：同一 claim 多来源、被后续证据推翻的旧结论——
   可在 `links` 加 `conflicts` 标注或加更新策略。

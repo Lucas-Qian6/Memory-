@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -32,8 +33,9 @@ from memory_dr import MemoryManager, MemoryStore  # noqa: E402
 from pipeline import DeepResearchPipeline  # noqa: E402
 from search_client import SearchClient  # noqa: E402
 
-# Optional write-through dump so you can inspect the in-task store afterwards.
-STORE_PATH = os.path.join(os.path.dirname(__file__), ".demo_memory.json")
+# Per-facet write-through directory so you can inspect the in-task store after a
+# run: working/state.md, episodic.jsonl, semantic.json, and artifacts/.
+STORE_DIR = os.path.join(os.path.dirname(__file__), ".demo_memory")
 
 QUESTION = (
     "How does reaction context affect retrosynthesis prediction, and can "
@@ -74,11 +76,11 @@ def main() -> None:
 
     load_dotenv()  # pick up SEARCH_API_* and ANTHROPIC_* config
 
-    # Fresh in-memory store for this single task (path is only an inspection
-    # dump; remove it so each run starts clean and reproducible).
-    if os.path.exists(STORE_PATH):
-        os.remove(STORE_PATH)
-    store = MemoryStore(path=STORE_PATH)
+    # Fresh layered store for this single task; wipe the dir so each run starts
+    # clean and reproducible (working/episodic/semantic + artifacts land here).
+    if os.path.exists(STORE_DIR):
+        shutil.rmtree(STORE_DIR)
+    store = MemoryStore(base_dir=STORE_DIR)
 
     biz_types = [b.strip() for b in args.biz.split(",") if b.strip()]
 
@@ -146,7 +148,7 @@ def main() -> None:
         "tracked its own goal/progress - all through the MemoryManager interface, with\n"
         "zero cross-session or long-term machinery."
     )
-    print(f"\nInspect the raw in-task store at: {STORE_PATH}")
+    print(f"\nInspect the raw in-task store under: {STORE_DIR}/")
 
 
 if __name__ == "__main__":

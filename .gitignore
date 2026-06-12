@@ -7,6 +7,10 @@ venv/
 .memory_store*.json
 .demo_memory.json
 demo/.demo_memory.json
+.demo_memory/
+demo/.demo_memory/
+demo/.demo_runs/
+artifacts/
 .demo_trace.json
 demo/.demo_trace.json
 .pytest_cache/

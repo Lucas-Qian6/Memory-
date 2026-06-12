@@ -332,6 +332,10 @@ function renderMemory(mem) {
       let meta = `<span class="mono">[${esc(it.source||'')}]</span>`;
       if (L.title) meta += ` · ${esc(L.title)}${L.year?(", "+esc(L.year)):""}`;
       if (L.url) meta += ` · <a href="${esc(L.url)}" target="_blank" rel="noopener">link</a>`;
+      if (it.uri && runId) {
+        const aname = String(it.uri).split("/").pop();
+        meta += ` · <a href="/api/runs/${esc(runId)}/artifact?name=${encodeURIComponent(aname)}" target="_blank" rel="noopener">raw source</a>`;
+      }
       if (it.tags && it.tags.length) meta += ` · <span style="color:var(--muted)">${esc(it.tags.join(", "))}</span>`;
       html += `<div class="mitem ${f}${fresh}"><div>${esc(it.content)}</div><div class="meta">${meta}</div></div>`;
     }

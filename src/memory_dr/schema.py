@@ -11,6 +11,7 @@ All memory here is scoped to a single long-horizon task (one user query):
 
 from __future__ import annotations
 
+import hashlib
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -29,6 +30,16 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _hash_content(text: str) -> str:
+    """Stable md5 of normalized content, for cheap exact-duplicate detection.
+
+    Normalization (strip + lowercase + whitespace-collapse) so that trivially
+    reformatted duplicates of the same claim/action hash to the same value.
+    """
+    norm = " ".join((text or "").strip().lower().split())
+    return hashlib.md5(norm.encode("utf-8")).hexdigest()
+
+
 @dataclass
 class MemoryItem:
     """A single unit of memory within one task.
@@ -44,6 +55,12 @@ class MemoryItem:
     tags: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
     links: Dict[str, Any] = field(default_factory=dict)
+    # P1 storage-layering fields:
+    evidence: Optional[str] = None  # exact supporting span behind a claim
+    uri: Optional[str] = None  # pointer to raw source archived under artifacts/
+    step: Optional[int] = None  # task step ordinal (drives recency, not wall-clock)
+    status: str = "active"  # active / superseded / ... (consistency work is later)
+    content_hash: str = ""  # md5 of normalized content, for exact dedup
     task_id: Optional[str] = None
     id: str = field(default_factory=_new_id)
     created_at: float = field(default_factory=_now)
@@ -55,6 +72,8 @@ class MemoryItem:
             )
         if not self.keywords:
             self.keywords = extract_keywords(self.content)
+        if not self.content_hash:
+            self.content_hash = _hash_content(self.content)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -9,3 +9,9 @@ anthropic>=0.45
 # Optional: nicer lexical retrieval. The MVP falls back to a pure-stdlib scorer
 # if this is not installed, so it is not strictly required.
 # rapidfuzz>=3.0
+
+# Optional: local embeddings for semantic recall (vector similarity instead of
+# pure keyword overlap). Model via MEMORY_DR_EMBED_MODEL (default all-MiniLM-L6-v2).
+# Retrieval falls back to the stdlib lexical scorer if this is not installed, so
+# offline / `--no-llm` runs still work without it.
+# sentence-transformers>=2.2

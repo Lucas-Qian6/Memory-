@@ -1,61 +1,50 @@
-"""MemoryStore: a single in-memory store, scoped to one task.
+"""MemoryStore: a single in-task store with per-facet write-through sinks.
 
-Within one long-horizon task the store lives in process memory (no cross-session
-persistence). Pass a ``path`` only if you want an optional write-through JSON
-dump for inspection/debugging. The ``type`` field is just a filterable
-namespace, so a future "split into per-type backends" change is a backend swap.
+The store keeps an in-memory ``{id: MemoryItem}`` index (the thing ``query`` /
+``all`` / ``seen_action`` read) and delegates *persistence* to one sink per
+facet (see ``backends.py``): working -> ``state.md``, episodic ->
+``episodic.jsonl``, semantic -> ``semantic.json`` + ``artifacts/`` + an
+embedding sidecar. Pass ``base_dir`` to persist to disk for inspection; pass
+``None`` to stay purely in-memory.
+
+The public surface (``add/get/delete/all/query/clear/__len__``) is unchanged, so
+``MemoryManager``, the policies, the tracer, and the demo keep working; swapping
+storage is a backend change, not an API change.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import threading
 from typing import Dict, List, Optional
 
+from .backends import EpisodicSink, SemanticSink, WorkingSink
 from .schema import MemoryItem, MemoryType
 
 
 class MemoryStore:
-    def __init__(self, path: Optional[str] = None) -> None:
-        # path=None keeps the store purely in-memory (the single-task default).
-        # A path enables an optional write-through JSON dump for inspection.
-        self.path = path
+    def __init__(self, base_dir: Optional[str] = None) -> None:
+        # base_dir=None keeps the store purely in-memory (library / test default).
+        # A directory enables per-facet write-through for inspection/debugging.
+        self.base_dir = base_dir
         self._items: Dict[str, MemoryItem] = {}
         self._lock = threading.RLock()
-        self._load()
-
-    # --- optional inspection persistence -------------------------------
-    def _load(self) -> None:
-        if not self.path or not os.path.exists(self.path):
-            return
-        try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                raw = json.load(fh)
-        except (json.JSONDecodeError, OSError):
-            return
-        for d in raw.get("items", []):
-            item = MemoryItem.from_dict(d)
-            self._items[item.id] = item
-
-    def _flush(self) -> None:
-        if not self.path:
-            return
-        tmp = self.path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(
-                {"items": [it.to_dict() for it in self._items.values()]},
-                fh,
-                ensure_ascii=False,
-                indent=2,
-            )
-        os.replace(tmp, self.path)
+        self.working_sink = WorkingSink(base_dir)
+        self.episodic_sink = EpisodicSink(base_dir)
+        self.semantic_sink = SemanticSink(base_dir)
+        if base_dir:
+            os.makedirs(base_dir, exist_ok=True)
 
     # --- CRUD ----------------------------------------------------------
     def add(self, item: MemoryItem) -> MemoryItem:
         with self._lock:
             self._items[item.id] = item
-            self._flush()
+            if item.type == "working":
+                self.working_sink.write_latest(item)
+            elif item.type == "episodic":
+                self.episodic_sink.append(item)
+            elif item.type == "semantic":
+                self.semantic_sink.add(item)
         return item
 
     def get(self, item_id: str) -> Optional[MemoryItem]:
@@ -63,10 +52,14 @@ class MemoryStore:
 
     def delete(self, item_id: str) -> bool:
         with self._lock:
-            existed = self._items.pop(item_id, None) is not None
-            if existed:
-                self._flush()
-        return existed
+            item = self._items.pop(item_id, None)
+            if item is None:
+                return False
+            # Only semantic has mutable on-disk state; working/episodic are
+            # append-only logs whose history we intentionally keep.
+            if item.type == "semantic":
+                self.semantic_sink.delete(item_id)
+            return True
 
     def all(self) -> List[MemoryItem]:
         return list(self._items.values())
@@ -90,7 +83,18 @@ class MemoryStore:
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
-            self._flush()
+            self.working_sink.clear()
+            self.episodic_sink.clear()
+            self.semantic_sink.clear()
+
+    # --- semantic recall helpers --------------------------------------
+    def semantic_vectors(self) -> Dict[str, List[float]]:
+        """The ``{id: embedding}`` sidecar used by hybrid vector recall."""
+        return self.semantic_sink.vectors
+
+    def write_artifact(self, source: Optional[str], content: str) -> Optional[str]:
+        """Archive raw source text once under artifacts/; return a relative uri."""
+        return self.semantic_sink.write_artifact(source, content)
 
     def __len__(self) -> int:
         return len(self._items)
