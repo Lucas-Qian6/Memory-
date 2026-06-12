@@ -202,9 +202,17 @@ def main() -> None:
     port = int(os.environ.get("MEMORY_DR_PORT", "8000"))
     if len(sys.argv) > 1:
         port = int(sys.argv[1])
-    host = "127.0.0.1"
+    # Defaults to localhost (safe). On a remote/dev box, either tunnel it (see
+    # hint below) or set MEMORY_DR_HOST=0.0.0.0 to bind all interfaces.
+    host = os.environ.get("MEMORY_DR_HOST", "127.0.0.1")
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"Memory inspector running at http://{host}:{port}  (Ctrl-C to stop)")
+    if host in ("127.0.0.1", "localhost"):
+        print(
+            f"  on a remote/dev box? from your laptop run:\n"
+            f"    ssh -N -L {port}:localhost:{port} <user>@<host>\n"
+            f"  then open http://localhost:{port}"
+        )
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
