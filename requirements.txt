@@ -1,0 +1,11 @@
+# Core memory system (src/memory_dr): pure standard library, no third-party deps.
+# The search client (demo/search_client.py) also uses only the stdlib (urllib),
+# so the real-API path needs no extra packages.
+
+# Needed for the default deep-research loop (LLM planning/extraction/synthesis).
+# Run `python demo/run_demo.py --mock --no-llm` to skip it and stay offline.
+anthropic>=0.45
+
+# Optional: nicer lexical retrieval. The MVP falls back to a pure-stdlib scorer
+# if this is not installed, so it is not strictly required.
+# rapidfuzz>=3.0
