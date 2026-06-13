@@ -2,8 +2,9 @@
 # The search client (demo/search_client.py) also uses only the stdlib (urllib),
 # so the real-API path needs no extra packages.
 
-# Needed for the default deep-research loop (LLM planning/extraction/synthesis).
-# Run `python demo/run_demo.py --mock --no-llm` to skip it and stay offline.
+# Required: the deep-research loop (LLM planning/extraction/synthesis) and the
+# in-task memory's near-duplicate / contradiction judge both need a real LLM.
+# There is no offline/mock mode - runs fail fast without a reachable LLM.
 anthropic>=0.45
 
 # Optional: nicer lexical retrieval. The MVP falls back to a pure-stdlib scorer
@@ -12,6 +13,5 @@ anthropic>=0.45
 
 # Optional: local embeddings for semantic recall (vector similarity instead of
 # pure keyword overlap). Model via MEMORY_DR_EMBED_MODEL (default all-MiniLM-L6-v2).
-# Retrieval falls back to the stdlib lexical scorer if this is not installed, so
-# offline / `--no-llm` runs still work without it.
+# Retrieval falls back to the stdlib lexical scorer if this is not installed.
 # sentence-transformers>=2.2

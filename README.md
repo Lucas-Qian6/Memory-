@@ -48,9 +48,8 @@ rather than a rewrite.
 | `src/memory_dr/retrieval.py` | lexical relevance + recency scoring |
 | `src/memory_dr/policies.py` | per-facet write (dedup) + read (rank/assemble) |
 | `src/memory_dr/manager.py` | `MemoryManager` — the public, pluggable API |
-| `demo/search_client.py` | real Wenyon `/api/v1/search` client + normalizing adapters (mock fallback) |
-| `demo/llm.py` | LLM plan / extract / reflect / synthesize over an Anthropic-compatible gateway |
-| `demo/tools.py` | offline mock search, shaped like the real API response |
+| `demo/search_client.py` | real Wenyon `/api/v1/search` client + normalizing adapters |
+| `demo/llm.py` | LLM plan / extract / reflect / synthesize + the memory relation judge, over an Anthropic-compatible gateway |
 | `demo/pipeline.py` | LLM-driven, memory-augmented single-task research loop |
 | `demo/run_demo.py` | one long-horizon task demo (CLI) |
 | `demo/trace.py` | `Tracer` + `TracingMemoryManager` (records read/write/decision events; zero core changes) |
@@ -60,17 +59,18 @@ rather than a rewrite.
 ## Run
 
 ```bash
-pip install -r requirements.txt              # anthropic, for the LLM loop
-python demo/run_demo.py --mock --no-llm      # fully offline + deterministic
-python demo/run_demo.py --mock               # offline search + real LLM loop
-python demo/run_demo.py "your question"      # real search API + LLM loop
+pip install -r requirements.txt              # anthropic (required); optional: sentence-transformers
+python demo/run_demo.py                       # the default question
+python demo/run_demo.py "your question"      # your own question
 ```
 
-Copy `.env.example` to `.env`. The real-search path needs `SEARCH_API_BASE_URL`
+A reachable **search API and an LLM are both required** — there is no offline/mock
+mode; runs fail fast if either is missing.
+
+Create a `.env` in the repo root. The search path needs `SEARCH_API_BASE_URL`
 (reachable from where you run it — the `svc-...` name only resolves inside the
-cluster / dev box; tunnel it for a laptop). The LLM loop reuses
-`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MEMORY_DR_MODEL`. With
-`--mock --no-llm` the core memory system needs no network and no API key.
+cluster / dev box; tunnel it for a laptop). The LLM loop uses
+`ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` / `MEMORY_DR_MODEL`.
 
 ### Using an Anthropic-compatible gateway (e.g. GPUGeek)
 
@@ -95,10 +95,10 @@ python demo/server.py            # then open http://127.0.0.1:8000
 python demo/server.py 8001       # custom port
 ```
 
-It reuses the same loop and `.env`. Tick "mock search" to run fully offline;
-untick it (with `SEARCH_API_BASE_URL` set, e.g. on the dev box) to inspect a real
-run. The ordered trace is also written to `demo/.demo_trace.json`. Built on the
-stdlib only (no web framework); `anthropic` is needed only for the LLM loop.
+It reuses the same loop and `.env` (a real search API + LLM are required). The
+ordered trace is also written to `demo/.demo_trace.json`, and the write timeline
+labels each store as new / exact-dup / merge / supersede / conflict. Built on the
+stdlib only (no web framework); `anthropic` is required for the LLM loop.
 
 ## Plugging into the real pipeline
 
