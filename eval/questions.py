@@ -4,10 +4,9 @@ These are intentionally multi-part / broad so the loop runs several rounds and
 accumulates enough findings that the memory-OFF arm's finite recency window
 starts dropping earlier-round evidence (which is exactly what memory-ON fixes).
 
-The topics are chosen to overlap the offline mock corpus (see demo/tools.py:
-retrosynthesis, reaction context, Graph2Edits, LLM agents for science, agent
-memory, RAG) so `--mock` runs still produce real hits; they are also general
-enough to run against the live search API.
+The topics span retrosynthesis, reaction context, Graph2Edits, LLM agents for
+science, agent memory, and RAG - broad enough to produce real hits against the
+live search API.
 """
 
 from __future__ import annotations
@@ -62,6 +61,17 @@ QUESTIONS: List[Dict[str, str]] = [
         "question": (
             "What are the trade-offs of memory-augmented agents for multi-step research "
             "tasks, in terms of evidence coverage, repeated work, and context usage?"
+        ),
+    },
+    {
+        # Contradiction probe (P3): explicitly invites competing/disagreeing claims
+        # about the same metric across sources, so the consistency path
+        # (merge / supersede / conflict) is exercised.
+        "id": "retro_disputed",
+        "question": (
+            "Do graph-based retrosynthesis models actually outperform template-based "
+            "methods on USPTO-50K top-1 accuracy? Surface any disagreement between "
+            "sources on the reported numbers and on which approach wins."
         ),
     },
 ]

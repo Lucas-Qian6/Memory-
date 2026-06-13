@@ -2,7 +2,7 @@
 
 Metrics come from two cheap, already-present sources: the pipeline's own
 counters and the ``Tracer`` event stream (demo/trace.py). Nothing here calls the
-LLM, so these process metrics are fully deterministic under ``--mock --no-llm``.
+LLM, so these process metrics are deterministic given the same search results.
 
 Mapping to the timeline P3 metrics:
 - 重复检索节省 (redundant work avoided): ``searches_run`` / ``searches_skipped``
@@ -26,6 +26,10 @@ NUMERIC_FIELDS = [
     "sources_cited",
     "report_chars",
     "llm_input_chars",
+    # P2/P3 activity: near-duplicate merges, contradiction supersedes/conflicts.
+    "merges",
+    "supersedes",
+    "conflicts",
 ]
 
 
@@ -53,6 +57,7 @@ def collect(
     """Build one metrics row for a finished (arm, question, trial) run."""
     syn = _last_synthesize(tracer) or {}
     stats = pipe.memory.stats()
+    wc = getattr(pipe.memory, "write_counts", {}) or {}
     return {
         "arm": arm,
         "question_id": question_id,
@@ -69,6 +74,10 @@ def collect(
         "context_chars": syn.get("context_chars", 0),
         "report_chars": syn.get("report_chars", len(report or "")),
         "llm_input_chars": llm_input_chars,
+        # P2 近重合并 / P3 一致性 (0 on the OFF arm, which does no merging)
+        "merges": wc.get("merge", 0),
+        "supersedes": wc.get("supersede", 0),
+        "conflicts": wc.get("conflict", 0),
     }
 
 

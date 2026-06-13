@@ -7,15 +7,10 @@ Aggregates ON-vs-OFF deltas + judge win-rates, prints a summary, and dumps the
 full result to ``eval/results/<timestamp>.json``.
 
 Run:
-    python eval/run_eval.py --mock --no-llm                 # deterministic, process metrics only
-    python eval/run_eval.py --mock --rounds 5 --trials 2    # mock corpus + LLM loop + judge
-    python eval/run_eval.py --rounds 6 --trials 3           # real search API (needs SEARCH_API_* in .env)
+    python eval/run_eval.py --rounds 6 --trials 3   # real search API + LLM (needs SEARCH_API_* + ANTHROPIC_* in .env)
+    python eval/run_eval.py --no-judge              # skip LLM-as-judge quality scoring (process metrics only)
 
-Notes:
-- Process metrics (searches saved, context chars, sources, claims) are
-  deterministic under ``--mock --no-llm``. Quality (the judge) needs the LLM.
-- The offline mock corpus is tiny (5 papers), so coverage/quality deltas are
-  small; run against the real API for a convincing quality comparison.
+A real search API and an LLM are required; there is no offline/mock mode.
 """
 
 from __future__ import annotations
@@ -48,19 +43,8 @@ import questions as questions_mod  # noqa: E402
 RESULTS_DIR = os.path.join(_HERE, "results")
 
 
-def make_client(want_mock: bool) -> Tuple[SearchClient, bool]:
-    """Build the search client, falling back to mock if the real API isn't set."""
-    try:
-        return SearchClient(mock=want_mock), want_mock
-    except ValueError as e:
-        print(f"[config] {e}\n[config] falling back to offline --mock search.")
-        return SearchClient(mock=True), True
-
-
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="memory ON vs OFF A/B eval")
-    p.add_argument("--mock", action="store_true", help="use offline mock search")
-    p.add_argument("--no-llm", action="store_true", help="deterministic loop (process metrics only)")
     p.add_argument("--no-judge", action="store_true", help="skip the LLM-as-judge quality scoring")
     p.add_argument("--rounds", type=int, default=3, help="max research rounds per run")
     p.add_argument("--trials", type=int, default=1, help="trials per question per arm")
@@ -85,7 +69,6 @@ def run_one(
     pipe = DeepResearchPipeline(
         mem,
         client,
-        use_llm=not args.no_llm,
         biz_types=["paper"],
         page_size=args.page_size,
         recall_top_k=args.recall_top_k,
@@ -101,34 +84,29 @@ def main() -> None:
     args = parse_args()
     load_dotenv()
 
-    use_llm = not args.no_llm
     qs = questions_mod.select(args.questions)
-    client, eff_mock = make_client(args.mock)
+    client = SearchClient()
 
-    llm_ready = use_llm and llm.llm_available()
-    judge_on = llm_ready and not args.no_judge
+    judge_on = not args.no_judge
 
     print("=" * 70)
     print("MEMORY A/B EVAL  (arm A = memory ON, arm B = memory OFF ablation)")
     print(
-        f"  search   : {'mock (offline)' if eff_mock else os.environ.get('SEARCH_API_BASE_URL', 'real API')}\n"
-        f"  reasoning: {'LLM ' + os.environ.get('MEMORY_DR_MODEL', '') if llm_ready else 'deterministic (no LLM)'}\n"
+        f"  search   : {os.environ.get('SEARCH_API_BASE_URL', 'real API')}\n"
+        f"  reasoning: LLM {os.environ.get('MEMORY_DR_MODEL', '')}\n"
         f"  judge    : {'on' if judge_on else 'off'}\n"
         f"  questions: {len(qs)} | trials: {args.trials} | rounds: {args.rounds}"
     )
     print("=" * 70)
 
     config = {
-        "mock": eff_mock,
-        "use_llm": use_llm,
-        "llm_available": llm_ready,
         "judge": judge_on,
         "rounds": args.rounds,
         "trials": args.trials,
         "questions": [q["id"] for q in qs],
         "recall_top_k": args.recall_top_k,
         "inject_char_budget": args.inject_char_budget,
-        "model": os.environ.get("MEMORY_DR_MODEL", "") if llm_ready else "",
+        "model": os.environ.get("MEMORY_DR_MODEL", ""),
     }
 
     # Stable, per-run output paths created up front. The summary JSON is rewritten
@@ -239,7 +217,7 @@ def _print_summary(by_arm, delta, judge_tally, out_path) -> None:
         for dim, tally in judge_tally.items():
             print(f"    {dim:<14} ON={tally['on']}  OFF={tally['off']}  tie={tally['tie']}")
     else:
-        print("\n  LLM-judge: skipped (no LLM / --no-judge / --no-llm).")
+        print("\n  LLM-judge: skipped (--no-judge).")
 
     print(f"\n  full results: {out_path}")
 

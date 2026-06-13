@@ -10,10 +10,9 @@ cited synthesis - all while its in-task memory:
 
 Run:
     python demo/run_demo.py                       # real API + LLM loop (needs config)
-    python demo/run_demo.py --mock                # offline mock search
-    python demo/run_demo.py --mock --no-llm       # fully offline + deterministic
     python demo/run_demo.py "your question" --biz paper,scholar
 
+A real search API and an LLM are required (no offline/mock mode).
 Config (.env): SEARCH_API_BASE_URL/SEARCH_USER_ID/SEARCH_SCENE for the search
 API; ANTHROPIC_API_KEY/ANTHROPIC_BASE_URL/MEMORY_DR_MODEL for the LLM loop.
 """
@@ -67,8 +66,6 @@ def banner(text: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("question", nargs="?", default=QUESTION, help="research question")
-    parser.add_argument("--mock", action="store_true", help="use offline mock search")
-    parser.add_argument("--no-llm", action="store_true", help="deterministic planning/extraction/synthesis")
     parser.add_argument("--rounds", type=int, default=3, help="max research rounds")
     parser.add_argument("--biz", default="paper", help="comma-separated bizTypes (paper,scholar,patent)")
     parser.add_argument("--page-size", type=int, default=6, help="results per search")
@@ -84,34 +81,19 @@ def main() -> None:
 
     biz_types = [b.strip() for b in args.biz.split(",") if b.strip()]
 
-    # Build the search client; fall back to mock if the API isn't configured.
-    try:
-        client = SearchClient(mock=args.mock)
-    except ValueError as e:
-        print(f"[config] {e}\n[config] falling back to offline --mock mode.")
-        client = SearchClient(mock=True)
-        args.mock = True
-
-    use_llm = not args.no_llm
-    if use_llm and not llm.llm_available():
-        reasoning = "LLM requested but unavailable -> deterministic fallback"
-    elif use_llm:
-        reasoning = f"LLM loop ({os.environ.get('MEMORY_DR_MODEL', 'default model')})"
-    else:
-        reasoning = "deterministic (no LLM)"
-    search_mode = "mock search (offline)" if args.mock else f"real API ({os.environ.get('SEARCH_API_BASE_URL', '?')})"
+    # Real search API + LLM are required (no offline/mock mode).
+    client = SearchClient()
 
     banner("ONE LONG-HORIZON TASK  (single user query, many steps)")
     print(f"  question : {args.question}")
-    print(f"  search   : {search_mode}")
-    print(f"  reasoning: {reasoning}")
+    print(f"  search   : real API ({os.environ.get('SEARCH_API_BASE_URL', '?')})")
+    print(f"  reasoning: LLM loop ({os.environ.get('MEMORY_DR_MODEL', 'default model')})")
     print(f"  bizTypes : {biz_types}")
 
-    mem = MemoryManager(store=store, task_id="task-alpha")
+    mem = MemoryManager(store=store, task_id="task-alpha", judge=llm.judge_relation)
     pipe = DeepResearchPipeline(
         mem,
         client,
-        use_llm=use_llm,
         biz_types=biz_types,
         page_size=args.page_size,
     )

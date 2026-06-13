@@ -1,4 +1,4 @@
-"""Client for the Wenyon search API (`POST /api/v1/search`), with a mock fallback.
+"""Client for the Wenyon search API (`POST /api/v1/search`).
 
 The pipeline only depends on the normalized ``Paper`` / ``Scholar`` / ``Patent``
 dataclasses below. Every quirk of the real response (`" | "`-joined authors,
@@ -21,8 +21,6 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
-
-import tools
 
 DEFAULT_USER_ID = "user_123"
 SEARCH_PATH = "/api/v1/search"
@@ -183,18 +181,16 @@ class SearchClient:
         base_url: Optional[str] = None,
         user_id: Optional[str] = None,
         scene: Optional[str] = None,
-        mock: bool = False,
         timeout: float = 30.0,
     ) -> None:
         self.base_url = (base_url or os.environ.get("SEARCH_API_BASE_URL", "")).rstrip("/")
         self.user_id = user_id or os.environ.get("SEARCH_USER_ID", DEFAULT_USER_ID)
         self.scene = scene if scene is not None else os.environ.get("SEARCH_SCENE")
-        self.mock = mock
         self.timeout = timeout
-        if not self.mock and not self.base_url:
+        if not self.base_url:
             raise ValueError(
                 "SEARCH_API_BASE_URL is not set. Set it (e.g. http://svc-...:8080) "
-                "or construct SearchClient(mock=True) for offline mode."
+                "in your environment/.env; a real search API is required."
             )
 
     def search(
@@ -205,10 +201,7 @@ class SearchClient:
         page_size: int = 10,
     ) -> SearchResults:
         biz_types = list(biz_types)
-        if self.mock:
-            raw = tools.mock_search(query, biz_types, page=page, page_size=page_size)
-        else:
-            raw = self._post(query, biz_types, page, page_size)
+        raw = self._post(query, biz_types, page, page_size)
         return self._parse(query, raw)
 
     def _post(self, query: str, biz_types: List[str], page: int, page_size: int) -> Dict:

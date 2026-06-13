@@ -3,8 +3,9 @@
 To avoid position/identity bias the two reports are shown in randomized order as
 "Report 1"/"Report 2"; the model picks a winner per dimension and we map the
 labels back to on/off afterwards. Reuses the same gateway as the loop
-(``llm._complete`` + ``llm._extract_json``). When the LLM is unavailable the
-judge returns ``None`` and the harness simply skips quality scoring.
+(``llm._complete`` + ``llm._extract_json``). When a report is missing or the
+model output can't be parsed the judge returns ``None`` and the harness skips
+that pair (an LLM itself is mandatory: ``llm._complete`` raises if unavailable).
 
 Dimensions:
 - faithfulness: claims supported by the cited sources, nothing invented.
@@ -65,11 +66,10 @@ def judge_pair(
     question: str,
     report_on: str,
     report_off: str,
-    use_llm: bool = True,
     rng: Optional[random.Random] = None,
 ) -> Optional[Dict[str, str]]:
     """Blind pairwise verdict. Returns {dim: 'on'|'off'|'tie', 'reason': str} or None."""
-    if not use_llm or not report_on or not report_off:
+    if not report_on or not report_off:
         return None
     r = rng or random
     flipped = r.random() < 0.5  # flipped => Report 1 is OFF

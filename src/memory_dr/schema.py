@@ -21,6 +21,14 @@ MemoryType = Literal["working", "episodic", "semantic"]
 
 VALID_TYPES = ("working", "episodic", "semantic")
 
+# Per-item lifecycle (set by the consistency + merge logic in the write policy):
+# - ``active``     : current, recallable.
+# - ``superseded`` : replaced by a newer, contradicting claim (kept for provenance).
+# - ``merged``     : folded into a canonical near-duplicate claim (kept for provenance).
+# The read path recalls only ``active`` items; the others stay on disk so the
+# trail behind a claim is never destroyed.
+VALID_STATUSES = ("active", "superseded", "merged")
+
 
 def _now() -> float:
     return time.time()
@@ -54,12 +62,17 @@ class MemoryItem:
     source: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     keywords: List[str] = field(default_factory=list)
+    # ``links`` carries both citation payload (title/authors/doi/url/...) and
+    # relation edges to other items by id: ``supersedes`` / ``conflicts_with`` /
+    # ``merged_from`` (lists of ids), ``superseded_by`` / ``merged_into`` (scalar
+    # ids), plus ``sources`` (list of citation dicts, unioned when near-duplicate
+    # claims are merged - the basis for multi-source attribution).
     links: Dict[str, Any] = field(default_factory=dict)
     # P1 storage-layering fields:
     evidence: Optional[str] = None  # exact supporting span behind a claim
     uri: Optional[str] = None  # pointer to raw source archived under artifacts/
     step: Optional[int] = None  # task step ordinal (drives recency, not wall-clock)
-    status: str = "active"  # active / superseded / ... (consistency work is later)
+    status: str = "active"  # one of VALID_STATUSES; read path recalls only "active"
     content_hash: str = ""  # md5 of normalized content, for exact dedup
     task_id: Optional[str] = None
     id: str = field(default_factory=_new_id)
@@ -82,6 +95,30 @@ class MemoryItem:
     def from_dict(cls, d: Dict[str, Any]) -> "MemoryItem":
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in d.items() if k in known})
+
+    # --- relation / lifecycle bookkeeping (consistency + merge) ---------
+    def add_relation(self, kind: str, other_id: str) -> None:
+        """Append a directed edge to another item's id under ``links[kind]``.
+
+        For the list-valued id relations (``supersedes`` / ``conflicts_with`` /
+        ``merged_from``). De-dupes and tolerates a pre-existing scalar value.
+        """
+        bucket = self.links.setdefault(kind, [])
+        if not isinstance(bucket, list):
+            bucket = [bucket]
+            self.links[kind] = bucket
+        if other_id not in bucket:
+            bucket.append(other_id)
+
+    def mark_superseded(self, by_id: str) -> None:
+        """Retire this item: ``status`` -> ``superseded`` + back-pointer to the winner."""
+        self.status = "superseded"
+        self.links["superseded_by"] = by_id
+
+    def mark_merged(self, into_id: str) -> None:
+        """Retire this item into a canonical: ``status`` -> ``merged`` + back-pointer."""
+        self.status = "merged"
+        self.links["merged_into"] = into_id
 
 
 _STOPWORDS = {

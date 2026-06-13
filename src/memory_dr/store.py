@@ -19,7 +19,21 @@ import threading
 from typing import Dict, List, Optional
 
 from .backends import EpisodicSink, SemanticSink, WorkingSink
-from .schema import MemoryItem, MemoryType
+from .schema import MemoryItem, MemoryType, _hash_content
+
+
+def _source_entry(item: MemoryItem) -> Dict[str, object]:
+    """A compact per-source citation record for the merged ``links['sources']`` union."""
+    links = item.links or {}
+    return {
+        "source": item.source,
+        "title": links.get("title"),
+        "year": links.get("year"),
+        "doi": links.get("doi"),
+        "url": links.get("url"),
+        "docId": links.get("docId"),
+        "evidence": item.evidence or links.get("evidence"),
+    }
 
 
 class MemoryStore:
@@ -46,6 +60,65 @@ class MemoryStore:
             elif item.type == "semantic":
                 self.semantic_sink.add(item)
         return item
+
+    def update(self, item: MemoryItem) -> MemoryItem:
+        """Persist an in-place mutation of an existing item (id unchanged).
+
+        Used by the consistency/merge path after editing ``status`` / ``links`` /
+        content. Semantic items are re-embedded + re-flushed; working rewrites its
+        snapshot; episodic is an append-only log and is intentionally left as-is.
+        """
+        with self._lock:
+            self._items[item.id] = item
+            if item.type == "semantic":
+                self.semantic_sink.add(item)
+            elif item.type == "working":
+                self.working_sink.write_latest(item)
+        return item
+
+    def merge_into(
+        self,
+        canonical: MemoryItem,
+        dup: MemoryItem,
+        canonical_text: Optional[str] = None,
+    ) -> MemoryItem:
+        """Fold near-duplicate ``dup`` into ``canonical`` (multi-source union).
+
+        Keeps ``canonical.id`` stable so existing references survive. Unions source
+        attribution into ``links['sources']`` so the merged claim can cite every
+        contributing source, advances ``step`` to the newer of the two, and records
+        a ``merged_from`` provenance edge. ``canonical_text`` (e.g. an LLM-merged
+        sentence) replaces the content when given; otherwise the richer (longer) of
+        the two texts is kept.
+        """
+        with self._lock:
+            if canonical_text and canonical_text.strip():
+                canonical.content = canonical_text.strip()
+                canonical.content_hash = _hash_content(canonical.content)
+            elif len(dup.content.strip()) > len(canonical.content.strip()):
+                canonical.content = dup.content.strip()
+                canonical.content_hash = _hash_content(canonical.content)
+
+            # Union source attribution (seed from canonical's own citation payload).
+            sources = canonical.links.get("sources")
+            if not isinstance(sources, list):
+                sources = [_source_entry(canonical)] if canonical.source else []
+            seen = {s.get("source") for s in sources if isinstance(s, dict)}
+            dup_entry = _source_entry(dup)
+            if dup_entry.get("source") and dup_entry["source"] not in seen:
+                sources.append(dup_entry)
+            if sources:
+                canonical.links["sources"] = sources
+
+            # Recency: keep the newer step ordinal.
+            if dup.step is not None:
+                canonical.step = max(canonical.step or 0, dup.step)
+
+            # Provenance edge to the folded-in duplicate.
+            canonical.add_relation("merged_from", dup.id)
+
+            self.update(canonical)
+        return canonical
 
     def get(self, item_id: str) -> Optional[MemoryItem]:
         return self._items.get(item_id)

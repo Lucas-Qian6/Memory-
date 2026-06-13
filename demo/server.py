@@ -68,29 +68,18 @@ class Run:
 def _execute(run: Run) -> None:
     """Run the pipeline for one query; all observability flows via run.tracer."""
     p = run.params
-    no_llm = bool(p.get("no_llm", False))
-    want_mock = bool(p.get("mock", True))
     rounds = int(p.get("rounds", 3))
     page_size = int(p.get("page_size", 6))
     biz_types = [b.strip() for b in str(p.get("biz", "paper")).split(",") if b.strip()] or ["paper"]
     question = (p.get("query") or QUESTION).strip()
 
     try:
-        try:
-            client = SearchClient(mock=want_mock)
-            effective_mock = want_mock
-        except ValueError as e:
-            run.tracer.record("info", {"event": "config", "fellback": True, "detail": str(e)})
-            client = SearchClient(mock=True)
-            effective_mock = True
+        # Real search API + LLM are required (no offline/mock mode).
+        client = SearchClient()
 
-        use_llm = not no_llm
         run.config = {
-            "mock": effective_mock,
-            "use_llm": use_llm,
-            "llm_available": llm.llm_available() if use_llm else False,
             "base_url": os.environ.get("SEARCH_API_BASE_URL", ""),
-            "model": os.environ.get("MEMORY_DR_MODEL", "") if use_llm else "",
+            "model": os.environ.get("MEMORY_DR_MODEL", ""),
             "biz_types": biz_types,
             "rounds": rounds,
             "question": question,
@@ -101,11 +90,12 @@ def _execute(run: Run) -> None:
         # raw sources (artifacts/); each run gets its own directory.
         run.base_dir = os.path.join(RUNS_DIR, run.id)
         store = MemoryStore(base_dir=run.base_dir)
-        run.memory = TracingMemoryManager(store=store, task_id="task-alpha", tracer=run.tracer)
+        run.memory = TracingMemoryManager(
+            store=store, task_id="task-alpha", tracer=run.tracer, judge=llm.judge_relation
+        )
         run.pipeline = DeepResearchPipeline(
             run.memory,
             client,
-            use_llm=use_llm,
             biz_types=biz_types,
             page_size=page_size,
             tracer=run.tracer,

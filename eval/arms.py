@@ -29,6 +29,7 @@ _ROOT = os.path.dirname(_HERE)
 sys.path.insert(0, os.path.join(_ROOT, "src"))
 sys.path.insert(0, os.path.join(_ROOT, "demo"))
 
+import llm  # noqa: E402
 from memory_dr import MemoryManager, MemoryStore  # noqa: E402
 from memory_dr.schema import MemoryItem, MemoryType  # noqa: E402
 
@@ -116,7 +117,9 @@ def build_memory(
 ) -> MemoryManager:
     """Factory: ``arm='on'`` -> real MemoryManager; ``arm='off'`` -> ablation."""
     if arm == "on":
-        return MemoryManager(store=MemoryStore(base_dir=base_dir), task_id=task_id)
+        return MemoryManager(
+            store=MemoryStore(base_dir=base_dir), task_id=task_id, judge=llm.judge_relation
+        )
     if arm == "off":
         return RawContextMemory(task_id=task_id)
     raise ValueError(f"unknown arm {arm!r}; expected 'on' or 'off'")

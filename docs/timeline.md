@@ -1,73 +1,44 @@
-# Memory @ DeepResearch — 6 月开发 Timeline
+# Memory @ DeepResearch — Timeline & 进度
 
-> **起点（6/11）**：MVP 已可离线跑通 —— `working / episodic / semantic` 单库 + 词法检索 +
-> 单任务 demo（`python demo/run_demo.py`）。
-> **目标（6/30）**：把 MVP 推进到「**能接进真实 DR pipeline、能用、可评测**」。
-> **原则**：① 接入优先（先能接进去，再优化）；② **每个 phase 结束都有可运行产物**；
-> ③ 所有访问只走 `MemoryManager`，底层换实现不影响调用方。
->
-> **进度（6/12）**：P1 存储分层 ✅ + P2 的**向量召回** ✅ 已落地——working=`state.md`、
-> episodic=`episodic.jsonl`、semantic=`semantic.json` + 原文 `artifacts/` + 本地向量 sidecar
-> （`sentence-transformers`，缺失退回词法）；扩字段 `evidence/uri/step/status/content_hash`、
-> recency 改 step 序、写入保持**内联同步**。余下：P2 **分级压缩**、P3 一致性+评测、P4 集成联调。
+> **目标（6/30）**：把 MVP 推进到「能接进真实 DR pipeline、能用、可评测」。
+> **原则**：① 接入优先；② 每个 phase 有可运行产物；③ 所有访问只走 `MemoryManager`，底层可换。
+> **配套**：能力说明 → [memory-capability.md](memory-capability.md)；落地结论 → [memory-schema-findings.md](memory-schema-findings.md)。
 
----
-## 阶段一览
+## 现状速览（6/13）
 
-| Phase | 日期 | 目标 | 可运行产物 | 退出标准 |
-| --- | --- | --- | --- | --- |
-| **P0 接入契约** | 6/11–6/13 | 让现有 `MemoryManager` 不重写就能挂进真实 loop | 薄 adapter + 一张 **tool→artifact→memory** 映射表 + KV 安全的 `assemble_context`（append-only）；demo 仍跑通 | 真实 pipeline 能在 mock 语料上端到端调用 `remember/recall/seen_action/update_state` |
-| **P1 存储分层** | 6/14–6/18 | 给每个 facet 合适的后端 + 修任务内 recency | 扩字段（`evidence`/`uri`/`step`/`status`/`content_hash`）；episodic→JSONL 追加、semantic→SQLite/JSON + 原文落 `artifacts/`、working→markdown 状态文件；recency 改为 **step 序** | 长跑后原文不进 live context，落盘可检视 |
-| **P2 向量召回 + 压缩** | 6/19–6/23 | 更好的召回 + 控溢出 | semantic 上可选 embeddings 索引（保留词法 fallback）；**分级压缩**（写入即抽取丢原文、读取 top-k+预算、近重 claim 合并、provenance 不压） | 向量开关可用；报告「注入 token vs 留存 token」 |
-| **P3 一致性 + 评测** | 6/24–6/27 | 处理时效/矛盾 + 证明价值 | `supersedes`/`conflicts_with` 标注 + 更新路径；**A/B eval harness**（memory on/off） | 跑出：重复检索节省、context 占用、目标连贯性、证据覆盖 |
-| **P4 集成联调** | 6/28–6/30 | 接真实模块 + 收尾 | 对接 长程任务/精准溯源（若就绪）的集成 demo + 结果短报告 + 缓冲 | 一个接近真实的任务跑通整条记忆链路 |
+P0 接入 ✅ · P1 存储分层 ✅ · P2 向量召回 + 近重合并 ✅ · P3 一致性 + A/B 评测 ✅（已出数）
+**余下**：P4 集成联调。（注：已移除离线/mock 脚手架，关系判定与规划/抽取/综合全流程必须真实 LLM）
 
----
+## 阶段
 
-## 各阶段细化
 
-### P0 接入契约（6/11–6/13）
-- **做什么**：写一个薄 adapter，把 plan/search/read/synthesize 各步映射到 `MemoryManager` 调用；
-  固化 `assemble_context` 为 **append-only（召回内容只拼到尾部，不改前缀）**，保护 KV cache。
-- **产物（可运行）**：`demo/run_demo.py` 照常跑；新增一张 tool→artifact→memory 映射表（doc）。
-- **退出标准**：真实 pipeline 可直接调 `MemoryManager`，无需触碰底层 store。
+| Phase            | 日期      | 状态  | 可运行产物（要点）                                                                                                                                                                   |
+| ---------------- | ------- | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **P0 接入契约**      | 6/11–13 | ✅   | pipeline 端到端只走 `MemoryManager`；`demo/run_demo.py` 跑通                                                                                                                        |
+| **P1 存储分层**      | 6/14–18 | ✅   | working=`state.md`、episodic=`episodic.jsonl`、semantic=`semantic.json`+原文`artifacts/`+向量 sidecar；扩字段 `evidence/uri/step/status/content_hash`；recency 改 **step 序**；写入**内联同步** |
+| **P2 向量召回 + 压缩** | 6/19–23 | ✅  | 向量召回 ✅（`sentence-transformers`，缺失退词法）；分级压缩 distill + top-k + 字符预算 + provenance 不压 ✅；**近重 claim 合并 ✅**（LLM 判同断言 → `store.merge_into` 并源）                                                                       |
+| **P3 一致性 + 评测**  | 6/24–27 | ✅  | A/B eval harness ✅（`eval/`，process 指标 + LLM-judge，逐 run 落盘）；**一致性 ✅**：`status` + `supersedes`/`conflicts_with`，写时 LLM 判矛盾、读时过滤                                                                  |
+| **P4 集成联调**      | 6/28–30 | ⬜   | 对接 长程任务/精准溯源（若就绪）的集成 demo + 短报告                                                                                                                                             |
 
-### P1 存储分层（6/14–6/18）
-- **做什么**：`MemoryItem` 扩字段；按 facet 落盘（episodic=追加日志、semantic=结构化+原文 `artifacts/`、
-  working=markdown）；**把 72h wall-clock recency 改成 step 序**（单任务仅 ~15 分钟，时间几乎不区分）。
-- **产物（可运行）**：新 schema 下跑通，原文留磁盘、不进上下文，store 可检视。
-- **退出标准**：长任务跑完，live context 不被原文撑爆。
 
-### P2 向量召回 + 压缩（6/19–6/23）
-- **做什么**：semantic 上加 embeddings 索引（可选依赖，缺失则退回词法）；落地分级压缩策略
-  （写入抽取丢原文 / 读取 top-k+字符预算 / 近重合并 / **provenance 不压**）。
-- **产物（可运行）**：向量召回开关；压缩前后 token 量化指标。
-- **退出标准**：能报出「留存 vs 注入」的 token 对比。
+## 评测结果（6/13，真实 API + Claude-4.6-opus，13/21 对）
 
-### P3 一致性 + 评测（6/24–6/27）
-- **做什么**：claim 加 `status`/`supersedes`/`conflicts_with` 与更新路径；搭 A/B eval（memory on/off）。
-- **产物（可运行）**：eval harness 一键出数。
-- **退出标准**：四个指标有数：重复检索↓、context 占用、目标连贯性、证据覆盖。
+memory ON vs OFF（同一 pipeline，只换 `MemoryManager`，OFF = 无外部记忆的有限上下文窗口）：
 
-### P4 集成联调（6/28–6/30）
-- **做什么**：接真实 长程任务/精准溯源 模块（若就绪）；写结果短报告；留缓冲吸收延期。
-- **产物（可运行）**：集成 demo + 报告。
-- **退出标准**：一个接近真实的任务端到端跑通。
+- **证据覆盖**：judge coverage ON 胜 **12/13**；引用来源 **7.4 vs 4.2**。
+- **效率**：检索次数 **9.4 vs 14.1**；LLM 输入 **−30%**（≈128k vs 183k 字符）。
+- **faithfulness / coherence**：基本打平（略偏 ON）。
+- **结论**：记忆主要赢在「同等注入预算下覆盖更多相关来源 + 更省检索/token」。
 
----
+## 关键产物
 
-## 关键里程碑（checkpoints）
-
-- **6/13** — 接入契约就绪：真实 loop 能调记忆。
-- **6/18** — 存储分层就绪：原文落盘、上下文不溢出。
-- **6/23** — 向量 + 压缩就绪：召回更准、token 可控。
-- **6/27** — 评测出数：有/无记忆的对比数字。
-- **6/30** — 集成联调 + 报告。
-
----
+- `demo/run_demo.py` — 单任务记忆增强 loop（mock / 真实 API / `--no-llm`）。
+- `demo/server.py` + `demo/webui/` — 记忆检视器（live read→decide→write trace + artifacts 链接）。
+- `eval/` — A/B 评测（`run_eval.py` 编排、`arms.py` 的 OFF 消融、`judge.py` 盲对评分；结果落 `eval/results/`）。
 
 ## 风险与缓冲
 
-- **真实 pipeline 未就绪**：P4 退化为「加固 adapter + 在 mock loop 上跑完整 eval」，前序阶段不受影响（皆走 `MemoryManager`）。
-- **向量后端选型未定**：默认本地 `sentence-transformers` + 词法 fallback，保住「无 key 也能跑」。
-- **进度滑动**：P4 自带缓冲；P2 的向量为可选项，必要时可后置，不阻塞 P3 评测。
+- **真实 pipeline 未就绪** → P4 退化为「在真实 API 上跑完整 eval」（已做到）。
+- **召回后端** → 本地 `sentence-transformers` + 词法 hybrid 保留（召回层）；但关系判定与规划/抽取/综合**必须真实 LLM**，已移除离线/mock 兜底（不再「无 key 也能跑」）。
+- **进度** → P2 近重合并、P3 一致性已完成；仅余 P4 集成联调。
+

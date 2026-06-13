@@ -7,9 +7,9 @@ change. The pipeline never queries storage directly.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
-from .policies import ReadPolicy, WritePolicy
+from .policies import Judge, ReadPolicy, WritePolicy
 from .schema import MemoryItem, MemoryType
 from .store import MemoryStore
 
@@ -21,6 +21,7 @@ class MemoryManager:
         write_policy: Optional[WritePolicy] = None,
         read_policy: Optional[ReadPolicy] = None,
         task_id: Optional[str] = None,
+        judge: Optional[Judge] = None,
     ) -> None:
         # NOTE: use explicit None checks. MemoryStore defines __len__, so an
         # empty (len 0) store is falsy; `store or MemoryStore()` would silently
@@ -29,6 +30,15 @@ class MemoryManager:
         self.write_policy = write_policy if write_policy is not None else WritePolicy()
         self.read_policy = read_policy if read_policy is not None else ReadPolicy()
         self.task_id = task_id
+        # LLM relation-judge for near-duplicate / contradiction decisions. It is
+        # required the moment the write policy finds a near-duplicate candidate
+        # (it raises if missing); recall / working / episodic never need it.
+        self.judge = judge
+        # Introspection for tracing/metrics: the op of the most recent remember()
+        # ("new" / "exact_dup" / "merge" / "supersede" / "conflict") + its target,
+        # plus cumulative per-op counts (used by the eval to report P2/P3 activity).
+        self.last_write: Optional[Dict[str, Any]] = None
+        self.write_counts: Dict[str, int] = {}
 
     # --- write ---------------------------------------------------------
     def remember(
@@ -42,8 +52,15 @@ class MemoryManager:
         uri: Optional[str] = None,
         step: Optional[int] = None,
     ) -> Optional[MemoryItem]:
-        """Store an item, applying selectivity + dedup. Returns the stored
-        (or pre-existing duplicate) item, or None if filtered out.
+        """Store an item, applying selectivity, dedup, near-duplicate merge and
+        contradiction handling. Returns the canonical/stored item, or None when it
+        is filtered out (too short / low value).
+
+        For the semantic facet a near-duplicate of an existing claim is resolved by
+        the LLM ``judge`` into one of: ``merge`` (fold in + union sources),
+        ``supersede`` (retire the older, contradicting claim), or ``conflict``
+        (keep both, cross-link as disputed). Nothing is deleted - retired items
+        keep their evidence/artifacts and are simply excluded from recall.
 
         ``evidence`` (supporting span), ``uri`` (pointer to archived raw source),
         and ``step`` (task step ordinal, drives recency) are optional first-class
@@ -62,10 +79,46 @@ class MemoryManager:
         )
         if not self.write_policy.should_store(item):
             return None
-        dup = self.write_policy.is_duplicate(item, self.store)
-        if dup is not None:
-            return dup
-        return self.store.add(item)
+
+        op, existing, verdict = self.write_policy.classify(item, self.store, judge=self.judge)
+        target_id = existing.id if existing is not None else None
+
+        if op == "exact_dup" and existing is not None:
+            result: Optional[MemoryItem] = existing
+        elif op == "merge" and existing is not None:
+            result = self.store.merge_into(
+                existing, item, canonical_text=verdict.get("canonical")
+            )
+            # Keep the folded-in duplicate on disk (status=merged) for provenance.
+            item.mark_merged(result.id)
+            self.store.add(item)
+        elif op == "supersede" and existing is not None:
+            if str(verdict.get("winner", "new")).lower() == "existing":
+                # The incoming claim is the outdated one: store it, but retired.
+                item.mark_superseded(existing.id)
+                existing.add_relation("supersedes", item.id)
+            else:
+                # Default: the new claim wins and retires the existing one.
+                item.add_relation("supersedes", existing.id)
+                existing.mark_superseded(item.id)
+            self.store.update(existing)
+            result = self.store.add(item)
+        elif op == "conflict" and existing is not None:
+            item.add_relation("conflicts_with", existing.id)
+            existing.add_relation("conflicts_with", item.id)
+            self.store.update(existing)
+            result = self.store.add(item)
+        else:
+            op = "new"
+            result = self.store.add(item)
+
+        self.last_write = {
+            "op": op,
+            "target_id": target_id,
+            "id": result.id if result is not None else None,
+        }
+        self.write_counts[op] = self.write_counts.get(op, 0) + 1
+        return result
 
     # --- read ----------------------------------------------------------
     def recall(

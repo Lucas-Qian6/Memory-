@@ -137,7 +137,6 @@ class TracingMemoryManager(MemoryManager):
         uri: Optional[str] = None,
         step: Optional[int] = None,
     ) -> Optional[MemoryItem]:
-        before = len(self.store)
         item = super().remember(
             content,
             type=type,
@@ -148,7 +147,6 @@ class TracingMemoryManager(MemoryManager):
             uri=uri,
             step=step,
         )
-        stored_new = len(self.store) > before
         if item is None:
             self._emit(
                 "write",
@@ -157,25 +155,31 @@ class TracingMemoryManager(MemoryManager):
                     "facet": type,
                     "source": source,
                     "preview": _preview(content),
+                    "relation": "filtered",
                     "stored": False,
-                    "reason": "filtered (too short / low value)",
+                    "reason": "too short / low value",
                 },
             )
-        else:
-            self._emit(
-                "write",
-                {
-                    "op": "remember",
-                    "facet": item.type,
-                    "source": item.source,
-                    "id": item.id,
-                    "preview": _preview(item.content),
-                    "tags": list(item.tags or []),
-                    "links_keys": list((item.links or {}).keys()),
-                    "stored": stored_new,
-                    "dedup_hit": not stored_new,
-                },
-            )
+            return item
+        # The write op (new / exact_dup / merge / supersede / conflict) and the
+        # existing item it related to come from the manager's introspection field.
+        info = self.last_write or {}
+        relation = info.get("op", "new")
+        self._emit(
+            "write",
+            {
+                "op": "remember",
+                "facet": item.type,
+                "source": item.source,
+                "id": item.id,
+                "preview": _preview(item.content),
+                "tags": list(item.tags or []),
+                "links_keys": list((item.links or {}).keys()),
+                "relation": relation,
+                "into": info.get("target_id"),
+                "stored": relation == "new",
+            },
+        )
         return item
 
     def update_state(self, state: str, step: Optional[int] = None) -> MemoryItem:

@@ -3,11 +3,11 @@
 Reuses ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_BASE_URL`` / ``MEMORY_DR_MODEL`` from
 the environment (the GPUGeek/Claude gateway already wired in ``.env``).
 
-Every function degrades to a deterministic fallback when the LLM is unavailable
-(``anthropic`` not installed, no key, network/JSON error) or when ``use_llm`` is
-False - so ``--mock`` and ``--no-llm`` runs stay fully offline and reproducible.
-The four functions map onto the loop: plan -> (per result) extract -> reflect
-(follow-ups) -> synthesize.
+An LLM is **required**. Every call raises ``RuntimeError`` when the gateway is
+unavailable (``anthropic`` not installed, no key) or when the model output can't
+be parsed - there is no deterministic/offline fallback. The functions map onto
+the loop: plan -> (per result) extract -> reflect (follow-ups) -> synthesize,
+plus ``judge_relation`` for in-task memory write decisions.
 """
 
 from __future__ import annotations
@@ -25,7 +25,6 @@ _STOPWORDS = {
 }
 
 _client_cache = None
-_client_tried = False
 
 # Lightweight per-run accounting of prompt chars actually sent to the LLM. The
 # eval harness resets this before a run and reads it after, as a token proxy for
@@ -45,51 +44,40 @@ def get_usage() -> int:
 
 
 # --------------------------------------------------------------------------
-# Low-level gateway access
+# Low-level gateway access (LLM is mandatory: fail fast, never degrade)
 # --------------------------------------------------------------------------
 def _get_client():
-    global _client_cache, _client_tried
-    if _client_tried:
+    global _client_cache
+    if _client_cache is not None:
         return _client_cache
-    _client_tried = True
     try:
         import anthropic
-    except Exception:
-        return None
+    except Exception as e:  # package missing
+        raise RuntimeError(
+            "anthropic is required (an LLM is mandatory): pip install anthropic"
+        ) from e
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        return None
-    base_url = os.environ.get("ANTHROPIC_BASE_URL")
-    try:
-        _client_cache = (
-            anthropic.Anthropic(base_url=base_url) if base_url else anthropic.Anthropic()
+        raise RuntimeError(
+            "ANTHROPIC_API_KEY is not set; an LLM is required to run this loop."
         )
-    except Exception:
-        _client_cache = None
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    _client_cache = (
+        anthropic.Anthropic(base_url=base_url) if base_url else anthropic.Anthropic()
+    )
     return _client_cache
 
 
-def llm_available() -> bool:
-    return _get_client() is not None
-
-
-def _complete(prompt: str, max_tokens: int = 1024, use_llm: bool = True) -> Optional[str]:
-    if not use_llm:
-        return None
+def _complete(prompt: str, max_tokens: int = 1024) -> str:
     client = _get_client()
-    if client is None:
-        return None
     global _usage_chars
     _usage_chars += len(prompt)
     model = os.environ.get("MEMORY_DR_MODEL", "claude-sonnet-4-6")
-    try:
-        msg = client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
-    except Exception:
-        return None
+    msg = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
 
 
 def _extract_json(text: Optional[str]):
@@ -143,7 +131,6 @@ def plan_subqueries(
     state: str = "",
     known: str = "",
     n: int = 3,
-    use_llm: bool = True,
 ) -> List[str]:
     """Decompose the research question into focused search queries."""
     prompt = (
@@ -155,12 +142,12 @@ def plan_subqueries(
         "that gather evidence to answer the question. Cover distinct sub-topics.\n"
         "Return ONLY a JSON array of strings."
     )
-    data = _extract_json(_complete(prompt, max_tokens=400, use_llm=use_llm))
+    data = _extract_json(_complete(prompt, max_tokens=400))
     if isinstance(data, list):
         queries = [str(q) for q in data if isinstance(q, (str, int, float)) and str(q).strip()]
         if queries:
             return _dedup_keep_order(queries)[:n]
-    return _fallback_subqueries(question, n)
+    raise RuntimeError("plan_subqueries: LLM did not return a usable JSON array of queries")
 
 
 def decide_followups(
@@ -168,7 +155,6 @@ def decide_followups(
     known: str,
     asked: List[str],
     n: int = 2,
-    use_llm: bool = True,
 ) -> List[str]:
     """Reflect on findings and propose NEW gap-filling queries, or stop ([])."""
     prompt = (
@@ -181,7 +167,7 @@ def decide_followups(
         "target the most important remaining gaps.\n"
         "Return ONLY a JSON array of strings."
     )
-    data = _extract_json(_complete(prompt, max_tokens=400, use_llm=use_llm))
+    data = _extract_json(_complete(prompt, max_tokens=400))
     if isinstance(data, list):
         asked_lower = {a.strip().lower() for a in asked}
         fresh = [
@@ -190,15 +176,13 @@ def decide_followups(
             if str(q).strip() and str(q).strip().lower() not in asked_lower
         ]
         return _dedup_keep_order(fresh)[:n]
-    # Deterministic fallback: no reflection model -> stop after the first round.
-    return []
+    raise RuntimeError("decide_followups: LLM did not return a JSON array")
 
 
 def extract_claims(
     question: str,
     paper,
     max_claims: int = 3,
-    use_llm: bool = True,
 ) -> List[Dict[str, str]]:
     """Extract atomic, question-relevant claims (+ supporting evidence span)."""
     abstract = getattr(paper, "abstract", "") or ""
@@ -216,22 +200,21 @@ def extract_claims(
         "abstract. If nothing is relevant, return [].\n"
         "Return ONLY a JSON array of objects with keys 'claim' and 'evidence'."
     )
-    data = _extract_json(_complete(prompt, max_tokens=700, use_llm=use_llm))
-    claims: List[Dict[str, str]] = []
+    data = _extract_json(_complete(prompt, max_tokens=700))
     if isinstance(data, list):
+        claims: List[Dict[str, str]] = []
         for obj in data:
             if isinstance(obj, dict):
                 text = str(obj.get("claim") or obj.get("text") or "").strip()
                 evidence = str(obj.get("evidence") or text).strip()
                 if len(text) >= 8:
                     claims.append({"text": text, "evidence": evidence})
-        if claims:
-            return claims[:max_claims]
-    return _fallback_claims(question, abstract, max_claims)
+        return claims[:max_claims]
+    raise RuntimeError("extract_claims: LLM did not return a JSON array")
 
 
-def synthesize(question: str, context: str, use_llm: bool = True) -> Optional[str]:
-    """Write a cited literature-review answer from recalled claims (or None)."""
+def synthesize(question: str, context: str) -> Optional[str]:
+    """Write a cited literature-review answer from recalled claims."""
     if not context.strip():
         return None
     prompt = (
@@ -242,28 +225,52 @@ def synthesize(question: str, context: str, use_llm: bool = True) -> Optional[st
         f"Recalled claims:\n{context}\n\n"
         "Write 1-2 short paragraphs followed by a 'Sources' list."
     )
-    return _complete(prompt, max_tokens=1024, use_llm=use_llm)
+    return _complete(prompt, max_tokens=1024)
 
 
 # --------------------------------------------------------------------------
-# Deterministic fallbacks
+# In-task memory: relation judge (near-duplicate merge + contradiction handling)
 # --------------------------------------------------------------------------
-def _fallback_subqueries(question: str, n: int) -> List[str]:
-    kws = _keywords(question, limit=3 * n)
-    chunks = [kws[i : i + 3] for i in range(0, len(kws), 3)]
-    queries = [" ".join(c) for c in chunks if c][:n]
-    return queries or [question.strip()]
+def judge_relation(new, cand) -> Dict[str, object]:
+    """Decide how a NEW claim relates to a similar EXISTING stored claim.
 
+    Called by ``WritePolicy.classify`` once embedding similarity flags a near
+    duplicate. Returns a JSON-shaped dict::
 
-def _fallback_claims(question: str, abstract: str, max_claims: int) -> List[Dict[str, str]]:
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", abstract) if len(s.strip()) >= 30]
-    q_terms = set(_keywords(question))
-    scored = sorted(
-        ((len(q_terms & set(_keywords(s))), s) for s in sentences),
-        key=lambda x: x[0],
-        reverse=True,
+        {"relation": "duplicate"|"merge"|"supersede"|"conflict"|"distinct",
+         "canonical": "<combined sentence>",   # for merge / duplicate
+         "winner": "new"|"existing",            # for supersede (which is current)
+         "reason": "<short>"}
+
+    Raises ``RuntimeError`` if the LLM output can't be parsed (no fallback).
+    """
+    new_text = getattr(new, "content", str(new))
+    cand_text = getattr(cand, "content", str(cand))
+    new_src, cand_src = getattr(new, "source", None), getattr(cand, "source", None)
+    new_step, cand_step = getattr(new, "step", None), getattr(cand, "step", None)
+    prompt = (
+        "You maintain an AI agent's in-task research memory. A NEW claim was just "
+        "extracted and is highly similar to an EXISTING stored claim. Decide their "
+        "relation so the memory stays consistent and non-redundant.\n\n"
+        f"NEW claim (source={new_src}, step={new_step}):\n{new_text}\n\n"
+        f"EXISTING claim (source={cand_src}, step={cand_step}):\n{cand_text}\n\n"
+        "Choose exactly ONE relation:\n"
+        '- "duplicate": same assertion, no new information.\n'
+        '- "merge": same assertion but complementary detail or a different source '
+        "worth keeping -> combine into one claim.\n"
+        '- "supersede": they CONTRADICT and one is a corrected/updated version -> '
+        "the newer/more authoritative one replaces the other.\n"
+        '- "conflict": they CONTRADICT but you cannot tell which is correct -> keep '
+        "both, flag as disputed.\n"
+        '- "distinct": actually different claims -> keep both.\n\n'
+        'For "merge"/"duplicate" also return "canonical": one self-contained '
+        "sentence capturing the combined claim.\n"
+        'For "supersede" also return "winner": "new" or "existing" (which claim is '
+        "current/true).\n"
+        'Return ONLY a JSON object with key "relation" (plus optional "canonical", '
+        '"winner", "reason").'
     )
-    picked = [s for ov, s in scored if ov > 0][:max_claims]
-    if not picked:
-        picked = [s for _, s in scored[:1]]
-    return [{"text": s, "evidence": s} for s in picked]
+    data = _extract_json(_complete(prompt, max_tokens=400))
+    if isinstance(data, dict) and data.get("relation"):
+        return data
+    raise RuntimeError("judge_relation: LLM did not return a usable JSON object")

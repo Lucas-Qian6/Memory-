@@ -111,10 +111,6 @@
     </div>
     <div class="opts">
       <div class="row">
-        <label><input type="checkbox" id="mock" checked /> mock search</label>
-        <label><input type="checkbox" id="nollm" /> no LLM</label>
-      </div>
-      <div class="row">
         <label>rounds <input type="number" id="rounds" value="3" min="1" max="8" /></label>
         <label>pageSize <input type="number" id="pageSize" value="6" min="1" max="20" /></label>
       </div>
@@ -181,8 +177,6 @@ $("run").addEventListener("click", startRun);
 async function startRun() {
   const body = {
     query: $("q").value.trim() || DEFAULT_Q,
-    mock: $("mock").checked,
-    no_llm: $("nollm").checked,
     rounds: parseInt($("rounds").value || "3", 10),
     page_size: parseInt($("pageSize").value || "6", 10),
     biz: $("biz").value.trim() || "paper",
@@ -225,8 +219,8 @@ function setStatus(s) {
 }
 function renderConfig(c) {
   if (!c || !Object.keys(c).length) return;
-  const src = c.mock ? "mock search" : ("real API " + (c.base_url || ""));
-  let reason = c.use_llm ? (c.llm_available ? ("LLM " + (c.model||"")) : "LLM unavailable → deterministic") : "deterministic (no LLM)";
+  const src = "real API " + (c.base_url || "");
+  let reason = "LLM " + (c.model || "");
   $("cfg").innerHTML = `search: <b>${esc(src)}</b> · reasoning: <b>${esc(reason)}</b> · bizTypes: ${esc((c.biz_types||[]).join(","))}`;
 }
 function renderMetrics(m) {
@@ -307,14 +301,18 @@ function renderEvent(ev) {
     if (p.op === "update_state") return row("WORKING", "WORKING", `write working snapshot`, `<span class="mono">${esc(p.preview)}</span>`);
     if (p.op === "remember") {
       const fac = (p.facet||"").toUpperCase();
-      if (!p.stored && p.dedup_hit) return row("DUP", "DUP", `near-duplicate, not stored <span style="color:var(--muted)">(${esc(p.facet)})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
-      if (!p.stored) return row("DUP", "FILTER", `filtered, not stored <span style="color:var(--muted)">(${esc(p.reason||'')})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
+      const rel = p.relation || (p.stored ? "new" : "exact_dup");
       const src = p.source ? ` <span style="color:var(--muted)">[${esc(p.source)}]</span>` : "";
+      const into = p.into ? ` <span style="color:var(--muted)">(${esc(p.into)})</span>` : "";
+      if (rel === "filtered") return row("DUP", "FILTER", `filtered, not stored <span style="color:var(--muted)">(${esc(p.reason||'')})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
+      if (rel === "exact_dup") return row("DUP", "DUP", `exact duplicate, not stored <span style="color:var(--muted)">(${esc(p.facet)})</span>`, `<span class="mono">${esc(p.preview)}</span>`);
+      if (rel === "merge") return row(fac, fac, `merge → existing claim${into}${src}`, `<span class="mono">${esc(p.preview)}</span>`);
+      if (rel === "supersede") return row(fac, fac, `supersede prior claim${into}${src}`, `<span class="mono">${esc(p.preview)}</span>`);
+      if (rel === "conflict") return row(fac, fac, `conflict with prior claim${into}${src}`, `<span class="mono">${esc(p.preview)}</span>`);
       return row(fac, fac, `write <b>${esc(p.facet)}</b>${src}`, `<span class="mono">${esc(p.preview)}</span>`);
     }
   }
   if (ev.kind === "info") {
-    if (p.event === "config" && p.fellback) { $("warn").textContent = "SEARCH_API_BASE_URL not set → fell back to mock search."; return ""; }
     if (p.event === "start") return row("INFO", "INFO", `run started`, "");
     if (p.event === "done") return row("INFO", "INFO", `run complete`, "");
     if (p.event === "error") return row("ERROR", "ERROR", `run failed`, `<span class="mono">${esc(p.error)}</span>`);

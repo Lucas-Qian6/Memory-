@@ -35,7 +35,6 @@ class DeepResearchPipeline:
         self,
         memory: MemoryManager,
         search_client: SearchClient,
-        use_llm: bool = True,
         biz_types=("paper",),
         page_size: int = 6,
         max_subqueries: int = 3,
@@ -47,7 +46,6 @@ class DeepResearchPipeline:
     ) -> None:
         self.memory = memory
         self.search = search_client
-        self.use_llm = use_llm
         self.biz_types = list(biz_types)
         self.page_size = page_size
         self.max_subqueries = max_subqueries
@@ -171,7 +169,7 @@ class DeepResearchPipeline:
             # Archive the raw source once (off the live context); claims point to it.
             uri = self.memory.archive(paper.doc_id, self._paper_raw(paper))
             claims = llm.extract_claims(
-                question, paper, max_claims=self.max_claims_per_paper, use_llm=self.use_llm
+                question, paper, max_claims=self.max_claims_per_paper
             )
             self._trace(
                 "llm",
@@ -217,16 +215,16 @@ class DeepResearchPipeline:
             # Recall feeds planning: latest state + what we already know.
             state_text = self._state_text()
             known_text = self._known_text(question)
-            if self.use_llm and r > 1:
+            if r > 1:
                 # Reflection: propose only NEW gap-filling queries, or stop.
                 method = "decide_followups"
                 sub_queries = llm.decide_followups(
-                    question, known_text, self.asked, n=self.max_subqueries, use_llm=True
+                    question, known_text, self.asked, n=self.max_subqueries
                 )
             else:
                 method = "plan_subqueries"
                 sub_queries = llm.plan_subqueries(
-                    question, state_text, known_text, n=self.max_subqueries, use_llm=self.use_llm
+                    question, state_text, known_text, n=self.max_subqueries
                 )
 
             sub_queries = [q for q in sub_queries if q and q.strip()]
@@ -280,7 +278,15 @@ class DeepResearchPipeline:
             cite = links.get("title") or it.source
             if links.get("year"):
                 cite = f"{cite}, {links['year']}"
-            line = f"- {it.content} (source: {it.source}; {cite})"
+            # Merged claims carry a unioned ``sources`` list -> cite every source id.
+            src_ids = it.source
+            sources = links.get("sources")
+            if isinstance(sources, list):
+                ids = [s.get("source") for s in sources if isinstance(s, dict) and s.get("source")]
+                if len(ids) > 1:
+                    src_ids = ", ".join(dict.fromkeys(ids))
+            disputed = " [disputed: sources disagree]" if links.get("conflicts_with") else ""
+            line = f"- {it.content}{disputed} (source: {src_ids}; {cite})"
             if used + len(line) > max_chars:
                 break
             lines.append(line)
@@ -297,28 +303,16 @@ class DeepResearchPipeline:
         )
         context = self._evidence_context(evidence, max_chars=self.inject_char_budget)
 
-        report = llm.synthesize(question, context, use_llm=self.use_llm)
-        used_llm = report is not None
+        report = llm.synthesize(question, context)
         if not report:
-            # Deterministic fallback (offline / no LLM).
-            lines = [f"# Mini literature review: {question}", ""]
-            for it in evidence:
-                links = it.links or {}
-                title = links.get("title", "")
-                ev = links.get("evidence", "")
-                lines.append(f"- {it.content}  (source: {it.source}; {title}; {ev})")
-            lines.append("")
-            lines.append(
-                f"Synthesized from {len(evidence)} recalled claims across "
-                f"{len({it.source for it in evidence})} sources."
+            raise RuntimeError(
+                "synthesize: no report produced (no recalled evidence to synthesize from)"
             )
-            report = "\n".join(lines)
 
         self._trace(
             "llm",
             {
                 "call": "synthesize",
-                "used_llm": used_llm,
                 "used_claims": len(evidence),
                 "context_chars": len(context),
                 "sources": sorted({it.source for it in evidence if it.source}),
